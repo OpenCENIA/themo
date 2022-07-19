@@ -1,5 +1,6 @@
 import themo.data as data
 import themo.embedder as embedder
+import torch
 
 dset = data.WITParallel(datadir="/home/ouhenio/storage/datasets/themo", split="val", download=True)
 clipEmbedder = embedder.FrozenCLIPEmbedder().cuda()
@@ -13,6 +14,6 @@ print(encoded)
 print("\n")
 print(f"embedding dimensions: {encoded.shape}")
 
-print(encoded[0][0])
-print(encoded[0][1])
+print(torch.equal(encoded[0][1], encoded[0][0]))
+print(torch.equal(encoded[0][1], encoded[0][-1]))
 
