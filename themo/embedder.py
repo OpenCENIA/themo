@@ -1,4 +1,13 @@
+import torch
+import torch.nn as nn
 from transformers import CLIPTokenizer, CLIPTextModel
+
+class AbstractEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def encode(self, *args, **kwargs):
+        raise NotImplementedError
 
 class FrozenCLIPEmbedder():
     """Uses the CLIP transformer encoder for text (from huggingface)"""
