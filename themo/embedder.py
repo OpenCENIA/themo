@@ -9,7 +9,7 @@ class AbstractEncoder(nn.Module):
     def encode(self, *args, **kwargs):
         raise NotImplementedError
 
-class FrozenCLIPEmbedder():
+class FrozenCLIPEmbedder(AbstractEncoder):
     """Uses the CLIP transformer encoder for text (from huggingface)"""
     def __init__(self, version="openai/clip-vit-large-patch14", device="cuda", max_length=77):  # clip-vit-base-patch32
         super().__init__()
