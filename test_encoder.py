@@ -12,3 +12,7 @@ print("CLIP embedding:")
 print(encoded)
 print("\n")
 print(f"embedding dimensions: {encoded.shape}")
+
+print(encoded[0][0])
+print(encoded[0][1])
+
