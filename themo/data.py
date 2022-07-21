@@ -10,6 +10,7 @@ import typing_extensions as tpx
 import types
 import torch
 import tqdm
+from .text_embedders import TextEmbedder
 
 import themo.utils as utils
 
@@ -24,7 +25,7 @@ _NS = types.SimpleNamespace
 _FileMeta = collections.namedtuple("_FileMeta", ["name", "size", "nrows"])
 
 
-def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str]) -> pa.Table:
+def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str], lang_to_embed: str = 'en') -> pa.Table:
     """Builds a parallel dataset of the form (image_url, langs[0]:caption,
     langs[1]:caption) out of some .tsv files. Expect each row of the .tsv file
     to have columns (language, image_url, caption_reference_description), rest
@@ -45,6 +46,9 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str]) -> pa.T
     image_to_captions: tp.MutableMapping[
         str, tp.MutableMapping[str, str]
     ] = collections.defaultdict(dict)
+
+    # instatiate text embedder
+    textEncoder = TextEmbedder().cuda()
 
     with tqdm.tqdm(
         desc="Processing rows",
@@ -74,12 +78,14 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str]) -> pa.T
                         image_to_captions[row["image_url"]][row_lang] = caption
                     progress.update()
 
+
     return pa.Table.from_pylist(
         [
             {
                 "key": key,
                 "source": captions[source_lang],
                 "target": captions[target_lang],
+                "embedding": textEncoder(captions[lang_to_embed])[0].cpu().numpy()
             }
             for key, captions in image_to_captions.items()
             if set(langs).issubset(captions.keys())
@@ -177,6 +183,11 @@ class WITParallel(torch.utils.data.Dataset):
         if download:
             self.download(datadir, split)
 
+        # 1: probar que esta wea (parquet_cache), no se cae si buildparallel retorna vectores de numeros
+        # 2: correr build_parallel solo, y dsp hacer el pipeline de parquet_cache sobre el resultadod e eso
+        # y dsp (o en paralelo), calcular los embedding sobre lo que salgad e build_parallel 
+        # reminder: 512 es el optimo del batch_size
+
         # I am not too sold on using filedata._replace here, but it gets the job done
         print(f"Loading {self!r}")
         self.parallel_items = utils.parquet_cache(datadir)(build_parallel)(
@@ -192,7 +203,7 @@ class WITParallel(torch.utils.data.Dataset):
     def __getitem__(self, key: int) -> tp.Tuple[str, str]:
         # I dont know if there is a better way to index a pyarrow.Table
         row = self.parallel_items.slice(key, 1).to_pylist()[0]
-        return row["source"], row["target"]
+        return row["source"], row["target"], row["embedding"]
 
     def __len__(self) -> int:
         return len(self.parallel_items)
