@@ -53,4 +53,6 @@ class FrozenCLIPVisionEmbedder(nn.Module):
         z = outputs.last_hidden_state
         pz = outputs.pooler_output # pooled (EOS token) states
         return z, pz
-    
+
+    def encode(self, text):
+        return self(text)
