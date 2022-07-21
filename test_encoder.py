@@ -22,11 +22,11 @@ visionEmbedder = clip_embedders.FrozenCLIPVisionEmbedder().cuda()
 test_positive_prompt = "two cats sleeping"
 test_negative_prompt = "orange juice"
 
-test_image = "http://images.cocodataset.org/val2017/000000039769.jpg"
-image = Image.open(requests.get(url, stream=True).raw)
+test_image_url = "http://images.cocodataset.org/val2017/000000039769.jpg"
+image = Image.open(requests.get(test_image_url, stream=True).raw)
 
 _, positive_text_token = textEmbedder.encode(test_positive_prompt)
 _, negative_text_token = textEmbedder.encode(test_negative_prompt)
-_, image_representation = visionEmbedder.encode(test_image)
+_, image_representation = visionEmbedder.encode(image)
 
 print(image_representation)
