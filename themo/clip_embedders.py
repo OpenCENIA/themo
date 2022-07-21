@@ -47,7 +47,7 @@ class FrozenCLIPVisionEmbedder(nn.Module):
             param.requires_grad = False
 
     def forward(self, image):
-        batch_encoding = self.processor(images=image, return_tensors="pt")
+        batch_encoding = self.processor(images=image, return_tensors="pt").to(self.device)
         image_features = self.vision_model(**batch_encoding)
 
         z = image_features.last_hidden_state
