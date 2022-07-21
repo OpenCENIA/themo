@@ -1,15 +1,8 @@
 import torch
 import torch.nn as nn
-from transformers import CLIPTokenizer, CLIPTextModel
+from transformers import CLIPTokenizer, CLIPTextModel, CLIPVisionModel, CLIPProcessor
 
-# class AbstractEncoder(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-
-#     def encode(self, *args, **kwargs):
-#         raise NotImplementedError
-
-class FrozenCLIPEmbedder(nn.Module):
+class FrozenCLIPTextEmbedder(nn.Module):
     """Uses the CLIP transformer encoder for text (from huggingface)"""
     def __init__(self, version="openai/clip-vit-large-patch14", device="cuda", max_length=77):  # clip-vit-base-patch32
         super().__init__()
@@ -37,3 +30,27 @@ class FrozenCLIPEmbedder(nn.Module):
 
     def encode(self, text):
         return self(text)   
+
+class FrozenCLIPVisionEmbedder(nn.Module):
+    """Uses the CLIP transformer encoder for images (from huggingface)"""
+    def __init__(self, version="openai/clip-vit-large-patch14", device="cuda", max_length=77):  # clip-vit-base-patch32
+        super().__init__()
+        self.processor = CLIPProcessor.from_pretrained(version)
+        self.vision_model = CLIPVisionModel.from_pretrained(version)
+        self.device = device
+        self.freeze()
+
+    def freeze(self):
+        self.vision_model = self.vision_model.eval()
+        #self.train = disabled_train
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def forward(self, image):
+        batch_encoding = self.processor(image, return_tensors="pt")
+        outputs = self.vision_model(**batch_encoding)
+
+        z = outputs.last_hidden_state
+        pz = outputs.pooler_output # pooled (EOS token) states
+        return z, pz
+    
