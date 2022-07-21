@@ -47,11 +47,11 @@ class FrozenCLIPVisionEmbedder(nn.Module):
             param.requires_grad = False
 
     def forward(self, image):
-        batch_encoding = self.processor(image, return_tensors="pt")
-        outputs = self.vision_model(**batch_encoding)
+        batch_encoding = self.processor(images=image, return_tensors="pt")
+        image_features = self.vision_model(**batch_encoding)
 
-        z = outputs.last_hidden_state
-        pz = outputs.pooler_output # pooled (EOS token) states
+        z = image_features.last_hidden_state
+        pz = image_features.pooler_output # pooled CLS states
         return z, pz
 
     def encode(self, text):
