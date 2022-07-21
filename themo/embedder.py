@@ -31,8 +31,9 @@ class FrozenCLIPEmbedder(AbstractEncoder):
         tokens = batch_encoding["input_ids"].to(self.device)
         outputs = self.transformer(input_ids=tokens)
 
-        z = outputs.last_hidden_state
-        return z
+        z = outputs.last_hidden_stat
+        pz = outputs.pooler_output # pooled (EOS token) states
+        return z, pz
 
     def encode(self, text):
         return self(text)   
