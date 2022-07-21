@@ -1,3 +1,5 @@
+import numpy as np
+import numpy.typing as npt
 import pyarrow as pa
 import pyarrow.csv
 import pytorch_lightning as pl
@@ -87,6 +89,14 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str]) -> pa.T
     )
 
 
+def compute_target_features(
+    target_sentences: tp.Sequence[pa.StringScalar],
+) -> npt.NDArray[np.float32]:
+    print("Computing target features, this might take a while")
+    N_FEATURES = 512
+    return np.random.rand(len(target_sentences), N_FEATURES).astype(np.float32)
+
+
 class WITParallel(torch.utils.data.Dataset):
     """Interface to WIT parallel dataset.
 
@@ -174,12 +184,12 @@ class WITParallel(torch.utils.data.Dataset):
         self.split = split
         self.langs = langs
 
+        print(f"Loading {self!r}")
+
         if download:
             self.download(datadir, split)
-
         # I am not too sold on using filedata._replace here, but it gets the job done
-        print(f"Loading {self!r}")
-        self.parallel_items = utils.parquet_cache(datadir)(build_parallel)(
+        self.parallel_items = utils.diskcache(datadir)(build_parallel)(
             [
                 filedata._replace(
                     name=pathlib.Path(datadir) / self.META.dataset_name / filedata.name
@@ -188,11 +198,15 @@ class WITParallel(torch.utils.data.Dataset):
             ],
             langs,
         )
+        self.features = utils.diskcache(datadir)(compute_target_features)(
+            self.parallel_items["target"]
+        )
 
-    def __getitem__(self, key: int) -> tp.Tuple[str, str]:
-        # I dont know if there is a better way to index a pyarrow.Table
-        row = self.parallel_items.slice(key, 1).to_pylist()[0]
-        return row["source"], row["target"]
+    def __getitem__(self, key: int) -> tp.Tuple[str, str, npt.NDArray[np.float32]]:
+        source = self.parallel_items["source"][key]
+        target = self.parallel_items["target"][key]
+        features = self.features[key]
+        return str(source), str(target), features
 
     def __len__(self) -> int:
         return len(self.parallel_items)
