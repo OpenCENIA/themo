@@ -181,6 +181,9 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
     META = _NS(
         dataset_name="wit",
         baseurl="https://storage.googleapis.com/gresearch/wit/",
+        features_dim=transformers.CLIPTextConfig.from_pretrained(
+            "openai/clip-vit-large-patch14"
+        ).hidden_size,
         files=_NS(
             train=[
                 _FileMeta(
@@ -363,11 +366,11 @@ class WITParallelDataModule(pl.LightningDataModule):
         WITParallel.download(self.datadir)
 
     def setup(
-        self, stage: tp.Optional[tpx.Literal["train", "val", "test"]] = None
+        self, stage: tp.Optional[tpx.Literal["fit", "validate", "test"]] = None
     ) -> None:
-        if stage in ("val", "train", None):
+        if stage in ("fit", "validate", None):
             self.val_split = WITParallel(self.datadir, "val")
-        if stage in ("train", None):
+        if stage in ("fit", None):
             self.train_split = WITParallel(self.datadir, "train")
         if stage in ("test", None):
             self.test_split = WITParallel(self.datadir, "test")
