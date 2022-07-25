@@ -92,7 +92,7 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str], lang_to
 
 def compute_target_features(
     target_sentences: tp.Sequence[pa.StringScalar],
-    encoder,
+    encoder: TextEmbedder,
     batch_size: int,
     num_workers: int
 ) -> npt.NDArray[np.float32]:
