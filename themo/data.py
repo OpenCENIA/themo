@@ -13,7 +13,7 @@ import typing_extensions as tpx
 import types
 import torch
 import tqdm
-from .text_embedders import TextEmbedder
+from .text_embedder import TextEmbedder
 
 
 __all__ = ["WITParallel", "WITParallelDataModule"]
@@ -22,7 +22,7 @@ _TQDM_WIDTH = 120
 _NS = types.SimpleNamespace
 
 
-# TODO: name field is sometimes just a name (a str) or sometimes a full pathlib.Path
+# TODO: name field is sometimes just a name (a str) or sometimes a full pathlib.Path,
 # maybe we should fix this
 _FileMeta = collections.namedtuple("_FileMeta", ["name", "size", "nrows"])
 
@@ -77,14 +77,12 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str], lang_to
                         image_to_captions[row["image_url"]][row_lang] = caption
                     progress.update()
 
-
     return pa.Table.from_pylist(
         [
             {
                 "key": key,
                 "source": captions[source_lang],
                 "target": captions[target_lang]
-                # "embedding": textEncoder(captions[lang_to_embed])[0].cpu().numpy()
             }
             for key, captions in image_to_captions.items()
             if set(langs).issubset(captions.keys())
@@ -94,16 +92,16 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str], lang_to
 
 def compute_target_features(
     target_sentences: tp.Sequence[pa.StringScalar],
-    encoder
+    encoder,
+    batch_size: int,
+    num_workers: int
 ) -> npt.NDArray[np.float32]:
     print("Computing target features, this might take a while")
-    N_FEATURES = 512
-    # print(len(target_sentences))
     target_sentences = [sentence.as_py() for sentence in target_sentences]
     dloader = torch.utils.data.DataLoader(
         target_sentences,
-        batch_size=512,
-        num_workers=6
+        batch_size=batch_size,
+        num_workers=num_workers
     )
     results = {}
     for batch in tqdm.tqdm(dloader):
@@ -265,7 +263,8 @@ class WITParallel(torch.utils.data.Dataset):
 
                 assert total_written == total_downloaded == filedata.size, (
                     f"somthing doesn't match for file {filedata.name}: "
-                    f"total_written={total_written}, total_downloaded={total_downloaded}, "
+                    f"total_written={total_written}," \
+                    "total_downloaded={total_downloaded}, "
                     f"filedata.size={filedata.size}"
                 )
         print("Done!")
