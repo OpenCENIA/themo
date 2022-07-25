@@ -1,3 +1,4 @@
+import joblib
 import numpy as np
 import numpy.typing as npt
 import pyarrow as pa
@@ -13,7 +14,6 @@ import types
 import torch
 import tqdm
 
-import themo.utils as utils
 
 __all__ = ["WITParallel", "WITParallelDataModule"]
 
@@ -172,6 +172,7 @@ class WITParallel(torch.utils.data.Dataset):
     )
 
     parallel_items: pa.Table
+    target_features: npt.NDArray[np.float32]
 
     def __init__(
         self,
@@ -189,7 +190,7 @@ class WITParallel(torch.utils.data.Dataset):
         if download:
             self.download(datadir, split)
         # I am not too sold on using filedata._replace here, but it gets the job done
-        self.parallel_items = utils.diskcache(datadir)(build_parallel)(
+        self.parallel_items = joblib.Memory(datadir).cache(build_parallel)(
             [
                 filedata._replace(
                     name=pathlib.Path(datadir) / self.META.dataset_name / filedata.name
@@ -198,14 +199,14 @@ class WITParallel(torch.utils.data.Dataset):
             ],
             langs,
         )
-        self.features = utils.diskcache(datadir)(compute_target_features)(
+        self.target_features = joblib.Memory(datadir).cache(compute_target_features)(
             self.parallel_items["target"]
         )
 
     def __getitem__(self, key: int) -> tp.Tuple[str, str, npt.NDArray[np.float32]]:
         source = self.parallel_items["source"][key]
         target = self.parallel_items["target"][key]
-        features = self.features[key]
+        features = self.target_features[key]
         return str(source), str(target), features
 
     def __len__(self) -> int:
