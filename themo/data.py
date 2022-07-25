@@ -1,3 +1,6 @@
+import joblib
+import numpy as np
+import numpy.typing as npt
 import pyarrow as pa
 import pyarrow.csv
 import pytorch_lightning as pl
@@ -12,7 +15,6 @@ import torch
 import tqdm
 from .text_embedders import TextEmbedder
 
-import themo.utils as utils
 
 __all__ = ["WITParallel", "WITParallelDataModule"]
 
@@ -46,9 +48,6 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str], lang_to
     image_to_captions: tp.MutableMapping[
         str, tp.MutableMapping[str, str]
     ] = collections.defaultdict(dict)
-
-    # instatiate text embedder
-    textEncoder = TextEmbedder().cuda()
 
     with tqdm.tqdm(
         desc="Processing rows",
@@ -84,13 +83,33 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str], lang_to
             {
                 "key": key,
                 "source": captions[source_lang],
-                "target": captions[target_lang],
-                "embedding": textEncoder(captions[lang_to_embed])[0].cpu().numpy()
+                "target": captions[target_lang]
+                # "embedding": textEncoder(captions[lang_to_embed])[0].cpu().numpy()
             }
             for key, captions in image_to_captions.items()
             if set(langs).issubset(captions.keys())
         ]
     )
+
+
+def compute_target_features(
+    target_sentences: tp.Sequence[pa.StringScalar],
+    encoder
+) -> npt.NDArray[np.float32]:
+    print("Computing target features, this might take a while")
+    N_FEATURES = 512
+    # print(len(target_sentences))
+    target_sentences = [sentence.as_py() for sentence in target_sentences]
+    dloader = torch.utils.data.DataLoader(
+        target_sentences,
+        batch_size=512,
+        num_workers=6
+    )
+    results = {}
+    for batch in tqdm.tqdm(dloader):
+        features = encoder(batch).cpu().data.numpy()
+        results.update({k: v for k, v in zip(target_sentences, features)})
+    return results
 
 
 class WITParallel(torch.utils.data.Dataset):
@@ -168,6 +187,7 @@ class WITParallel(torch.utils.data.Dataset):
     )
 
     parallel_items: pa.Table
+    target_features: npt.NDArray[np.float32]
 
     def __init__(
         self,
@@ -180,17 +200,12 @@ class WITParallel(torch.utils.data.Dataset):
         self.split = split
         self.langs = langs
 
+        print(f"Loading {self!r}")
+
         if download:
             self.download(datadir, split)
-
-        # 1: probar que esta wea (parquet_cache), no se cae si buildparallel retorna vectores de numeros
-        # 2: correr build_parallel solo, y dsp hacer el pipeline de parquet_cache sobre el resultadod e eso
-        # y dsp (o en paralelo), calcular los embedding sobre lo que salgad e build_parallel 
-        # reminder: 512 es el optimo del batch_size
-
         # I am not too sold on using filedata._replace here, but it gets the job done
-        print(f"Loading {self!r}")
-        self.parallel_items = utils.parquet_cache(datadir)(build_parallel)(
+        self.parallel_items = joblib.Memory(datadir).cache(build_parallel)(
             [
                 filedata._replace(
                     name=pathlib.Path(datadir) / self.META.dataset_name / filedata.name
@@ -199,11 +214,19 @@ class WITParallel(torch.utils.data.Dataset):
             ],
             langs,
         )
+        # Instatiate feature extractor
+        textEncoder = TextEmbedder().cuda()
+        # Compute features
+        self.target_features = joblib.Memory(datadir).cache(compute_target_features)(
+            self.parallel_items["target"],
+            textEncoder
+        )
 
-    def __getitem__(self, key: int) -> tp.Tuple[str, str]:
-        # I dont know if there is a better way to index a pyarrow.Table
-        row = self.parallel_items.slice(key, 1).to_pylist()[0]
-        return row["source"], row["target"], row["embedding"]
+    def __getitem__(self, key: int) -> tp.Tuple[str, str, npt.NDArray[np.float32]]:
+        source = self.parallel_items["source"][key]
+        target = self.parallel_items["target"][key]
+        features = self.target_features[str(target)]
+        return str(source), str(target), features
 
     def __len__(self) -> int:
         return len(self.parallel_items)

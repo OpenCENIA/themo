@@ -8,4 +8,4 @@ pytorch-lightning==1.6.5
 cloudpickle==2.1.0
 pandas==1.3.5
 pyarrow==8.0.0
-pillow
+joblib==1.1.0
