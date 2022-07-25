@@ -5,7 +5,7 @@ import themo
 
 
 @click.command()
-@click.option("--batch-size", default=128)
+@click.option("--batch-size", default=32)
 @click.option("--max-sequence-length", default=77)
 @click.option("--learn-rate", default=5e-4)
 def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> None:
@@ -15,5 +15,5 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> None:
     model = themo.ThemoTextLitModel(
         embed_dim=themo.WITParallel.META.features_dim, learn_rate=learn_rate
     )
-    trainer = pl.Trainer(gpus=-1 if torch.cuda.is_available else 0)
+    trainer = pl.Trainer(gpus=-torch.cuda.is_available())  # super cursed
     trainer.fit(model, datamodule)
