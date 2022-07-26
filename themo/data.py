@@ -14,7 +14,6 @@ import typing as tp
 import typing_extensions as tpx
 import types
 import tqdm
-import warnings
 import functools
 
 
@@ -237,29 +236,7 @@ class WITParallel(torch.utils.data.Dataset):
             langs,
         )
 
-        # CLIP embedder
-        # *****************************************************************************
-        # tokenizer = transformers.CLIPTokenizer.from_pretrained(self.clip_version)
-        # collate_fn = functools.partial(
-        #     tokenizer,
-        #     truncation=True,
-        #     max_length=77,
-        #     padding="max_length",
-        #     return_tensors="pt",
-        # )
-        # dloader = torch.utils.data.DataLoader(
-        #     dset,
-        #     batch_size=self.batch_size,
-        #     num_workers=6,
-        #     collate_fn=collate_fn,
-        # )
-        # # Instatiate feature extractor
-        # if torch.cuda.is_available():
-        #     textEncoder = TextEmbedder().cuda()
-        # else:
-        #     textEncoder = TextEmbedder()
-        #     warnings.warn("No cuda device found, switching to cpu instead", RuntimeWarning)
-        # Compute features
+        # Compute CLIP embeddings
         self.target_features = joblib.Memory(datadir).cache(compute_target_features)(
             self.parallel_items["target"],
             clip_version="openai/clip-vit-large-patch14",
