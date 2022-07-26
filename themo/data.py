@@ -8,12 +8,14 @@ import collections
 import requests
 import inspect
 import pathlib
+import transformers
+import torch
 import typing as tp
 import typing_extensions as tpx
 import types
-import torch
 import tqdm
-from .text_embedder import TextEmbedder
+import warnings
+import functools
 
 
 __all__ = ["WITParallel", "WITParallelDataModule"]
@@ -27,7 +29,7 @@ _NS = types.SimpleNamespace
 _FileMeta = collections.namedtuple("_FileMeta", ["name", "size", "nrows"])
 
 
-def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str], lang_to_embed: str = 'en') -> pa.Table:
+def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str]) -> pa.Table:
     """Builds a parallel dataset of the form (image_url, langs[0]:caption,
     langs[1]:caption) out of some .tsv files. Expect each row of the .tsv file
     to have columns (language, image_url, caption_reference_description), rest
@@ -82,7 +84,7 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str], lang_to
             {
                 "key": key,
                 "source": captions[source_lang],
-                "target": captions[target_lang]
+                "target": captions[target_lang],
             }
             for key, captions in image_to_captions.items()
             if set(langs).issubset(captions.keys())
@@ -92,21 +94,41 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str], lang_to
 
 def compute_target_features(
     target_sentences: tp.Sequence[pa.StringScalar],
-    encoder: TextEmbedder,
+    clip_version: str,
     batch_size: int,
     num_workers: int
 ) -> npt.NDArray[np.float32]:
     print("Computing target features, this might take a while")
-    target_sentences = [sentence.as_py() for sentence in target_sentences]
+
+    tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
+    partial_tokenizer = functools.partial(
+        tokenizer,
+        truncation=True,
+        max_length=77,
+        padding="max_length",
+        return_tensors="pt",
+    )
+
+    def preprocess(sentences):
+        sentences = [sentence.as_py() for sentence in sentences]
+        return partial_tokenizer(sentences)
+
     dloader = torch.utils.data.DataLoader(
         target_sentences,
         batch_size=batch_size,
-        num_workers=num_workers
+        num_workers=num_workers,
+        collate_fn=preprocess,
     )
-    results = {}
+
+    model = torch.nn.DataParallel(transformers.CLIPTextModel.from_pretrained(clip_version))
+    model.eval()
+    model.requires_grad_(False)
+    model.cuda()
+    results = []
     for batch in tqdm.tqdm(dloader):
-        features = encoder(batch).cpu().data.numpy()
-        results.update({k: v for k, v in zip(target_sentences, features)})
+        batch = {k: v.cuda() for k, v in batch.items()}
+        features = model(**batch).pooler_output.cpu().data.numpy()
+        results.extend(features)
     return results
 
 
@@ -193,10 +215,12 @@ class WITParallel(torch.utils.data.Dataset):
         split: tpx.Literal["train", "val", "test"],
         langs: tp.Tuple[str, str] = ("es", "en"),
         download: bool = False,
+        clip_version: str = "openai/clip-vit-large-patch14",
     ) -> None:
         self.datadir = datadir
         self.split = split
         self.langs = langs
+        self.clip_version = clip_version
 
         print(f"Loading {self!r}")
 
@@ -212,18 +236,41 @@ class WITParallel(torch.utils.data.Dataset):
             ],
             langs,
         )
-        # Instatiate feature extractor
-        textEncoder = TextEmbedder().cuda()
+
+        # CLIP embedder
+        # *****************************************************************************
+        # tokenizer = transformers.CLIPTokenizer.from_pretrained(self.clip_version)
+        # collate_fn = functools.partial(
+        #     tokenizer,
+        #     truncation=True,
+        #     max_length=77,
+        #     padding="max_length",
+        #     return_tensors="pt",
+        # )
+        # dloader = torch.utils.data.DataLoader(
+        #     dset,
+        #     batch_size=self.batch_size,
+        #     num_workers=6,
+        #     collate_fn=collate_fn,
+        # )
+        # # Instatiate feature extractor
+        # if torch.cuda.is_available():
+        #     textEncoder = TextEmbedder().cuda()
+        # else:
+        #     textEncoder = TextEmbedder()
+        #     warnings.warn("No cuda device found, switching to cpu instead", RuntimeWarning)
         # Compute features
         self.target_features = joblib.Memory(datadir).cache(compute_target_features)(
             self.parallel_items["target"],
-            textEncoder
+            clip_version="openai/clip-vit-large-patch14",
+            batch_size=512,
+            num_workers=6,
         )
 
     def __getitem__(self, key: int) -> tp.Tuple[str, str, npt.NDArray[np.float32]]:
         source = self.parallel_items["source"][key]
         target = self.parallel_items["target"][key]
-        features = self.target_features[str(target)]
+        features = self.target_features[key]
         return str(source), str(target), features
 
     def __len__(self) -> int:
