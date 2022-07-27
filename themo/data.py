@@ -19,7 +19,9 @@ import tqdm
 import transformers
 import typing_extensions as tpx
 
-__all__ = ["WITParallel", "WITParallelDataModule"]
+__all__ = ["WITParallel", "LitWitParallel", "TARGET_FEATURES_MODEL"]
+
+TARGET_FEATURES_MODEL = "openai/clip-vit-large-patch14"
 
 _TQDM_WIDTH = 120
 _NS = types.SimpleNamespace
@@ -181,9 +183,6 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
     META = _NS(
         dataset_name="wit",
         baseurl="https://storage.googleapis.com/gresearch/wit/",
-        features_dim=transformers.CLIPTextConfig.from_pretrained(
-            "openai/clip-vit-large-patch14"
-        ).hidden_size,
         files=_NS(
             train=[
                 _FileMeta(
@@ -243,7 +242,7 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
         split: tpx.Literal["train", "val", "test"],
         langs: tp.Tuple[str, str] = ("es", "en"),
         download: bool = False,
-        clip_version: str = "openai/clip-vit-large-patch14",
+        clip_version: str = TARGET_FEATURES_MODEL,
     ) -> None:
         self.datadir = datadir
         self.split = split
@@ -335,7 +334,7 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
         )
 
 
-class WITParallelDataModule(pl.LightningDataModule):
+class LitWITParallel(pl.LightningDataModule):
     # these attrs are set in __init__, and work mostly as hparams
     datadir: str
     batch_size: int

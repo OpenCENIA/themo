@@ -33,10 +33,10 @@ class ThemoTextModel(nn.Module):
         return self.projection(first_hidden)
 
 
-class ThemoTextLitModel(ThemoTextModel, pl.LightningModule):
+class LitThemoTextModel(ThemoTextModel, pl.LightningModule):
     def __init__(self, embed_dim: int, learn_rate: float) -> None:
         super(ThemoTextModel, self).__init__()
-        super(ThemoTextLitModel, self).__init__(embed_dim)
+        super(LitThemoTextModel, self).__init__(embed_dim)
 
         self.save_hyperparameters()
         self.learn_rate = learn_rate
