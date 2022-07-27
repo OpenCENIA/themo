@@ -31,7 +31,7 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
         "mode": "min",
     }
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        filename="epoch={epoch}-train-loss={val/sequence_acc:.3f}",
+        filename="epoch={epoch}_train-loss={train/loss:.3f}",
         auto_insert_metric_name=False,
         **checkpoint_callback_kwargs,
     )
@@ -44,15 +44,11 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
         ),
         callbacks=[
             pl.callbacks.EarlyStopping(
-                patience=2,
+                patience=3,
                 **checkpoint_callback_kwargs,
             ),
             checkpoint_callback,
         ],
-        max_epochs=200,
-        deterministic=True,
-        limit_train_batches=200,
-        limit_val_batches=20,
     )
     trainer.fit(model, datamodule)
     return checkpoint_callback.best_model_path
