@@ -15,6 +15,7 @@ import typing_extensions as tpx
 import types
 import tqdm
 import warnings
+import os
 
 
 __all__ = ["WITParallel", "WITParallelDataModule"]
@@ -99,8 +100,8 @@ def compute_target_features(
 ) -> npt.NDArray[np.float32]:
     print("Computing target features, this might take a while")
 
+    tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
     def preprocess(sentences):
-        tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
         sentences = [sentence.as_py() for sentence in sentences]
         return tokenizer(
             sentences,
@@ -239,9 +240,9 @@ class WITParallel(torch.utils.data.Dataset):
         # Compute CLIP embeddings
         self.target_features = joblib.Memory(datadir).cache(compute_target_features)(
             self.parallel_items["target"],
-            clip_version="openai/clip-vit-large-patch14",
+            clip_version=self.clip_version,
             batch_size=512,
-            num_workers=6,
+            num_workers=os.cpu_count() or 0,
         )
 
     def __getitem__(self, key: int) -> tp.Tuple[str, str, npt.NDArray[np.float32]]:
