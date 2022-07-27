@@ -50,7 +50,6 @@ def _collate_wit_items(
     batch: tp.Sequence[_WITItem],
     tokenize: tp.Callable[[tp.Sequence[str]], transformers.BatchEncoding],
 ) -> _Batch:
-    # WIP: change to actual tokenizer when the model is figured ou
     source_sentences, _, target_features = zip(*batch)
     return _Batch(tokenize(source_sentences), torch.tensor(np.stack(target_features)))
 
@@ -153,7 +152,12 @@ def compute_target_features(
         warnings.warn("No GPU found, switching to CPU mode", RuntimeWarning)
     model.to(device)
     results = []
-    for batch in tqdm.tqdm(dloader):
+    for batch in tqdm.tqdm(
+        dloader,
+        desc="Computing features",
+        unit="batch",
+        ncols=_TQDM_WIDTH,
+    ):
         features = model(**batch.to(device)).pooler_output.cpu().data.numpy()
         results.append(features)
     return np.concatenate(results)

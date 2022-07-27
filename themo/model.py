@@ -3,11 +3,13 @@ import torch
 import torch.nn as nn
 import transformers
 
+import themo.data as data
+
 
 class ThemoTextModel(nn.Module):
     def __init__(self, embed_dim: int) -> None:
         self.transformer = transformers.BertModel.from_pretrained(
-            "dccuchile/bert-base-spanish-wwm-uncased"
+            "dccuchile/bert-base-spanish-wwm-uncased", add_pooling_layer=False
         )
         transformer_width = self.transformer.config.hidden_size
         self.ln_final = nn.LayerNorm(transformer_width)
@@ -19,14 +21,14 @@ class ThemoTextModel(nn.Module):
 
         self.reset_parameters()
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         # only initialize projection i guess
         # taken from https://github.com/openai/CLIP/blob/f69a9bc217f6df9213628848b3f9b0b6fc542401/clip/model.py#L326
         for parameter in self.projection.parameters():
             nn.init.normal_(parameter, std=self.transformer.config.hidden_size**-0.5)
 
     # same signature as self.transformer
-    def forward(self, *args, **kwargs):
+    def forward(self, *args, **kwargs) -> torch.Tensor:
         last_hidden_state, *_ = self.transformer(*args, **kwargs).values()
         normalized = self.ln_final(last_hidden_state)
         first_hidden = normalized[:, 0]
@@ -43,20 +45,20 @@ class LitThemoTextModel(ThemoTextModel, pl.LightningModule):
 
         self.loss = nn.MSELoss()
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch: data._Batch, batch_idx: int) -> torch.Tensor:
         input, target = batch
         output = self(**input)
         loss = self.loss(output, target)
         self.log("train/loss", loss)
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch: data._Batch, batch_idx: int) -> None:
         input, target = batch
         output = self(**input)
         loss = self.loss(output, target)
         self.log("val/loss", loss)
 
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> torch.optim.Optimizer:
         # TODO: improve optimization. There are many options and it's not clear
         # what options are best, since we are not training from scratch but
         # finetuning a pretrained bert model
