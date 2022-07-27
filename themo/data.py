@@ -14,7 +14,7 @@ import typing as tp
 import typing_extensions as tpx
 import types
 import tqdm
-import functools
+import warnings
 
 
 __all__ = ["WITParallel", "WITParallelDataModule"]
@@ -99,18 +99,16 @@ def compute_target_features(
 ) -> npt.NDArray[np.float32]:
     print("Computing target features, this might take a while")
 
-    tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
-    partial_tokenizer = functools.partial(
-        tokenizer,
-        truncation=True,
-        max_length=77,
-        padding="max_length",
-        return_tensors="pt",
-    )
-
     def preprocess(sentences):
+        tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
         sentences = [sentence.as_py() for sentence in sentences]
-        return partial_tokenizer(sentences)
+        return tokenizer(
+            sentences,
+            truncation=True,
+            max_length=77,
+            padding="max_length",
+            return_tensors="pt",
+        )
 
     dloader = torch.utils.data.DataLoader(
         target_sentences,
@@ -119,16 +117,18 @@ def compute_target_features(
         collate_fn=preprocess,
     )
 
-    model = torch.nn.DataParallel(transformers.CLIPTextModel.from_pretrained(clip_version))
-    model.eval()
+    model = transformers.CLIPTextModel.from_pretrained(clip_version)
+    model = model.eval()
     model.requires_grad_(False)
-    model.cuda()
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cpu':
+        warnings.warn("No GPU found, switching to CPU mode", RuntimeWarning)
+    model.to(device)
     results = []
     for batch in tqdm.tqdm(dloader):
-        batch = {k: v.cuda() for k, v in batch.items()}
-        features = model(**batch).pooler_output.cpu().data.numpy()
-        results.extend(features)
-    return results
+        features = model(**batch.to(device)).pooler_output.cpu().data.numpy()
+        results.append(features)
+    return np.concatenate(results)
 
 
 class WITParallel(torch.utils.data.Dataset):
@@ -287,8 +287,8 @@ class WITParallel(torch.utils.data.Dataset):
 
                 assert total_written == total_downloaded == filedata.size, (
                     f"somthing doesn't match for file {filedata.name}: "
-                    f"total_written={total_written}," \
-                    "total_downloaded={total_downloaded}, "
+                    f"total_written={total_written},"
+                    f"total_downloaded={total_downloaded}, "
                     f"filedata.size={filedata.size}"
                 )
         print("Done!")
