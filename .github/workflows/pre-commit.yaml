@@ -1,0 +1,26 @@
+name: lint
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.7.x'
+    - name: CI env pip cache
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: pip|${{ runner.os }}|${{ hashFiles('requirements/ci.txt') }}
+    - name: Pre-commit cache
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pre-commit
+        key: pre-commit-3|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
+    - run: pip install -r requirements/ci.txt
+    - run: pre-commit run --show-diff-on-failure --color=always --all-files
