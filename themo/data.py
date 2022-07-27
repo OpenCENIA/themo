@@ -1,22 +1,22 @@
+import collections
+import inspect
+import os
+import pathlib
+import types
+import typing as tp
+import warnings
+
 import joblib
 import numpy as np
 import numpy.typing as npt
 import pyarrow as pa
 import pyarrow.csv
 import pytorch_lightning as pl
-import collections
 import requests
-import inspect
-import pathlib
-import transformers
 import torch
-import typing as tp
-import typing_extensions as tpx
-import types
 import tqdm
-import warnings
-import os
-
+import transformers
+import typing_extensions as tpx
 
 __all__ = ["WITParallel", "WITParallelDataModule"]
 
@@ -96,11 +96,12 @@ def compute_target_features(
     target_sentences: tp.Sequence[pa.StringScalar],
     clip_version: str,
     batch_size: int,
-    num_workers: int
+    num_workers: int,
 ) -> npt.NDArray[np.float32]:
     print("Computing target features, this might take a while")
 
     tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
+
     def preprocess(sentences):
         sentences = [sentence.as_py() for sentence in sentences]
         return tokenizer(
@@ -121,8 +122,8 @@ def compute_target_features(
     model = transformers.CLIPTextModel.from_pretrained(clip_version)
     model = model.eval()
     model.requires_grad_(False)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    if device == 'cpu':
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cpu":
         warnings.warn("No GPU found, switching to CPU mode", RuntimeWarning)
     model.to(device)
     results = []
@@ -287,8 +288,8 @@ class WITParallel(torch.utils.data.Dataset):
                         progress.update(len(chunk))
 
                 assert total_written == total_downloaded == filedata.size, (
-                    f"somthing doesn't match for file {filedata.name}: "
-                    f"total_written={total_written},"
+                    f"something doesn't match for file {filedata.name}: "
+                    f"total_written={total_written}, "
                     f"total_downloaded={total_downloaded}, "
                     f"filedata.size={filedata.size}"
                 )
