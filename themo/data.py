@@ -8,11 +8,14 @@ import collections
 import requests
 import inspect
 import pathlib
+import transformers
+import torch
 import typing as tp
 import typing_extensions as tpx
 import types
-import torch
 import tqdm
+import warnings
+import os
 
 
 __all__ = ["WITParallel", "WITParallelDataModule"]
@@ -21,7 +24,7 @@ _TQDM_WIDTH = 120
 _NS = types.SimpleNamespace
 
 
-# TODO: name field is sometimes just a name (a str) or sometimes a full pathlib.Path
+# TODO: name field is sometimes just a name (a str) or sometimes a full pathlib.Path,
 # maybe we should fix this
 _FileMeta = collections.namedtuple("_FileMeta", ["name", "size", "nrows"])
 
@@ -91,10 +94,42 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str]) -> pa.T
 
 def compute_target_features(
     target_sentences: tp.Sequence[pa.StringScalar],
+    clip_version: str,
+    batch_size: int,
+    num_workers: int
 ) -> npt.NDArray[np.float32]:
     print("Computing target features, this might take a while")
-    N_FEATURES = 512
-    return np.random.rand(len(target_sentences), N_FEATURES).astype(np.float32)
+
+    tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
+    def preprocess(sentences):
+        sentences = [sentence.as_py() for sentence in sentences]
+        return tokenizer(
+            sentences,
+            truncation=True,
+            max_length=77,
+            padding="max_length",
+            return_tensors="pt",
+        )
+
+    dloader = torch.utils.data.DataLoader(
+        target_sentences,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        collate_fn=preprocess,
+    )
+
+    model = transformers.CLIPTextModel.from_pretrained(clip_version)
+    model = model.eval()
+    model.requires_grad_(False)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cpu':
+        warnings.warn("No GPU found, switching to CPU mode", RuntimeWarning)
+    model.to(device)
+    results = []
+    for batch in tqdm.tqdm(dloader):
+        features = model(**batch.to(device)).pooler_output.cpu().data.numpy()
+        results.append(features)
+    return np.concatenate(results)
 
 
 class WITParallel(torch.utils.data.Dataset):
@@ -180,10 +215,12 @@ class WITParallel(torch.utils.data.Dataset):
         split: tpx.Literal["train", "val", "test"],
         langs: tp.Tuple[str, str] = ("es", "en"),
         download: bool = False,
+        clip_version: str = "openai/clip-vit-large-patch14",
     ) -> None:
         self.datadir = datadir
         self.split = split
         self.langs = langs
+        self.clip_version = clip_version
 
         print(f"Loading {self!r}")
 
@@ -199,8 +236,13 @@ class WITParallel(torch.utils.data.Dataset):
             ],
             langs,
         )
+
+        # Compute CLIP embeddings
         self.target_features = joblib.Memory(datadir).cache(compute_target_features)(
-            self.parallel_items["target"]
+            self.parallel_items["target"],
+            clip_version=self.clip_version,
+            batch_size=512,
+            num_workers=os.cpu_count() or 0,
         )
 
     def __getitem__(self, key: int) -> tp.Tuple[str, str, npt.NDArray[np.float32]]:
@@ -246,7 +288,8 @@ class WITParallel(torch.utils.data.Dataset):
 
                 assert total_written == total_downloaded == filedata.size, (
                     f"somthing doesn't match for file {filedata.name}: "
-                    f"total_written={total_written}, total_downloaded={total_downloaded}, "
+                    f"total_written={total_written},"
+                    f"total_downloaded={total_downloaded}, "
                     f"filedata.size={filedata.size}"
                 )
         print("Done!")
