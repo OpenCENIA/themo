@@ -19,11 +19,10 @@ import tqdm
 import transformers
 import typing_extensions as tpx
 
-from .model import BERT_MODEL_NAME
-
 __all__ = ["WITParallel", "LitWITParallel", "TARGET_FEATURES_MODEL"]
 
 TARGET_FEATURES_MODEL = "openai/clip-vit-large-patch14"
+BERT_MODEL_NAME = "dccuchile/bert-base-spanish-wwm-uncased"
 
 _TQDM_WIDTH = 120
 _NS = types.SimpleNamespace
@@ -70,6 +69,7 @@ def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str]) -> pa.T
     list. Assumes the resulting number of caption pairs is small enough to fit
     in memory.
     """
+    print("Building parallel dataset")
     source_lang, target_lang = langs
     total_rows = sum(f.nrows for f in files)
 
@@ -127,9 +127,12 @@ def compute_target_features(
 ) -> npt.NDArray[np.float32]:
     print("Computing target features, this might take a while")
 
+    print(f"Loading CLIP tokenizer for {clip_version}")
     tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
 
-    def preprocess(sentences):
+    def preprocess(
+        sentences: tp.Sequence[pa.StringScalar],
+    ) -> transformers.BatchEncoding:
         sentences = [sentence.as_py() for sentence in sentences]
         return tokenizer(
             sentences,
@@ -139,13 +142,16 @@ def compute_target_features(
             return_tensors="pt",
         )
 
-    dloader = torch.utils.data.DataLoader(
-        target_sentences,
+    dloader: torch.utils.data.DataLoader[
+        transformers.BatchEncoding
+    ] = torch.utils.data.DataLoader(
+        tp.cast(torch.utils.data.Dataset[transformers.BatchEncoding], target_sentences),
         batch_size=batch_size,
         num_workers=num_workers,
         collate_fn=preprocess,
     )
 
+    print(f"Loading CLIPTextModel version {clip_version}")
     model = transformers.CLIPTextModel.from_pretrained(clip_version)
     model = model.eval()
     model.requires_grad_(False)
@@ -260,7 +266,7 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
         if download:
             self.download(datadir, split)
         # I am not too sold on using filedata._replace here, but it gets the job done
-        self.parallel_items = joblib.Memory(datadir).cache(build_parallel)(
+        self.parallel_items = joblib.Memory(datadir, verbose=0).cache(build_parallel)(
             [
                 filedata._replace(
                     name=pathlib.Path(datadir) / self.META.dataset_name / filedata.name
@@ -271,7 +277,9 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
         )
 
         # Compute CLIP embeddings
-        self.target_features = joblib.Memory(datadir).cache(compute_target_features)(
+        self.target_features = joblib.Memory(datadir, verbose=0).cache(
+            compute_target_features
+        )(
             self.parallel_items["target"],
             clip_version=self.clip_version,
             batch_size=512,
@@ -295,36 +303,41 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
         splits = (split,) if split else ("train", "val", "test")
 
         print(f"Downloading files to {basepath}, this might take a while...")
-        for split in splits:
-            for filedata in getattr(cls.META.files, split):
-                full_path = basepath / filedata.name
-                if full_path.exists():
-                    print(f"found {full_path}, won't download")
-                    continue
+        all_files = [
+            fdata for split in splits for fdata in getattr(cls.META.files, split)
+        ]
+        if all((basepath / filedata.name).exists() for filedata in all_files):
+            print(f"All files already in {basepath}, skipping...")
+            return
+        for filedata in all_files:
+            full_path = basepath / filedata.name
+            if full_path.exists():
+                print(f"found {full_path}, won't download")
+                continue
 
-                total_written = total_downloaded = 0
-                with open(full_path, "wb") as outfile, requests.get(
-                    cls.META.baseurl + filedata.name, stream=True
-                ) as response, tqdm.tqdm(
-                    desc=filedata.name,
-                    unit="b",
-                    unit_scale=True,
-                    total=filedata.size,
-                    ncols=_TQDM_WIDTH,
-                ) as progress:
-                    for chunk in response.iter_content(10 * 2**20):  # 10MB
-                        written = outfile.write(chunk)
+            total_written = total_downloaded = 0
+            with open(full_path, "wb") as outfile, requests.get(
+                cls.META.baseurl + filedata.name, stream=True
+            ) as response, tqdm.tqdm(
+                desc=filedata.name,
+                unit="b",
+                unit_scale=True,
+                total=filedata.size,
+                ncols=_TQDM_WIDTH,
+            ) as progress:
+                for chunk in response.iter_content(10 * 2**20):  # 10MB
+                    written = outfile.write(chunk)
 
-                        total_downloaded += len(chunk)
-                        total_written += written
-                        progress.update(len(chunk))
+                    total_downloaded += len(chunk)
+                    total_written += written
+                    progress.update(len(chunk))
 
-                assert total_written == total_downloaded == filedata.size, (
-                    f"something doesn't match for file {filedata.name}: "
-                    f"total_written={total_written}, "
-                    f"total_downloaded={total_downloaded}, "
-                    f"filedata.size={filedata.size}"
-                )
+            assert total_written == total_downloaded == filedata.size, (
+                f"something doesn't match for file {filedata.name}: "
+                f"total_written={total_written}, "
+                f"total_downloaded={total_downloaded}, "
+                f"filedata.size={filedata.size}"
+            )
         print("Done!")
 
     def __repr__(self) -> str:
