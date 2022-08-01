@@ -16,6 +16,8 @@ _TQDM_WIDTH = 120
 # nllb model: "facebook/nllb-200-distilled-600M"
 # nllb en code -> "eng_Latn"
 # nllb es code -> "spa_Latn"
+
+
 def translate_target_sentences(
     target_sentences: tp.Sequence[pa.StringScalar],
     model_path: str,
@@ -28,15 +30,14 @@ def translate_target_sentences(
 
     if src_lang:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
-            model_path,
-            src_lang=src_lang
+            model_path, src_lang=src_lang
         )
     else:
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
     collate_fn = functools.partial(
         tokenizer,
         truncation=True,
-        max_length=77, # not sure
+        max_length=77,  # not sure
         padding="max_length",
         return_tensors="pt",
     )
@@ -63,9 +64,11 @@ def translate_target_sentences(
         if target_lang:
             generated_ids = model.generate(
                 **batch.to(device),
-                forced_bos_token_id=tokenizer.lang_code_to_id[target_lang]
+                forced_bos_token_id=tokenizer.lang_code_to_id[target_lang],
             )
         else:
             generated_ids = model.generate(**batch.to(device))
-        results.extend(tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0])
+        results.extend(
+            tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        )
     return pa.Table.from_pylist(results)
