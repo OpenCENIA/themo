@@ -1,7 +1,8 @@
-import transformers
-import torch
 import click
 import pytorch_lightning as pl
+import torch
+import transformers
+
 import themo
 
 

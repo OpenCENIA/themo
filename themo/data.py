@@ -1,27 +1,27 @@
+import collections
 import functools
-import transformers
+import inspect
 import os
+import pathlib
+import types
+import typing as tp
+import warnings
+
 import joblib
 import numpy as np
 import numpy.typing as npt
 import pyarrow as pa
 import pyarrow.csv
 import pytorch_lightning as pl
-import collections
 import requests
-import inspect
-import pathlib
-import transformers
 import torch
-import typing as tp
-import typing_extensions as tpx
-import types
 import tqdm
-import warnings
-import os
+import transformers
+import typing_extensions as tpx
 
+from .model import BERT_MODEL_NAME
 
-__all__ = ["WITParallel", "LitWitParallel", "TARGET_FEATURES_MODEL"]
+__all__ = ["WITParallel", "LitWITParallel", "TARGET_FEATURES_MODEL"]
 
 TARGET_FEATURES_MODEL = "openai/clip-vit-large-patch14"
 
@@ -320,8 +320,8 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
                         progress.update(len(chunk))
 
                 assert total_written == total_downloaded == filedata.size, (
-                    f"somthing doesn't match for file {filedata.name}: "
-                    f"total_written={total_written},"
+                    f"something doesn't match for file {filedata.name}: "
+                    f"total_written={total_written}, "
                     f"total_downloaded={total_downloaded}, "
                     f"filedata.size={filedata.size}"
                 )
@@ -345,6 +345,7 @@ class LitWITParallel(pl.LightningDataModule):
     datadir: str
     batch_size: int
     max_sequence_length: int
+    tokenizer_name: str
     # these attrs are set in setup method
     # splits are optional because some might not be present depending on stage
     train_split: tp.Optional[WITParallel]
@@ -359,6 +360,7 @@ class LitWITParallel(pl.LightningDataModule):
         datadir: str,
         batch_size: int,
         max_sequence_length: int,
+        tokenizer_name: str = BERT_MODEL_NAME,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=("datadir",))
@@ -366,6 +368,7 @@ class LitWITParallel(pl.LightningDataModule):
         self.datadir = datadir
         self.batch_size = batch_size
         self.max_sequence_length = max_sequence_length
+        self.tokenizer_name = tokenizer_name
 
     def prepare_data(self) -> None:
         WITParallel.download(self.datadir)
@@ -381,9 +384,7 @@ class LitWITParallel(pl.LightningDataModule):
             self.test_split = WITParallel(self.datadir, "test")
 
         # always load tokenizer
-        self.tokenizer = transformers.BertTokenizer.from_pretrained(
-            "dccuchile/bert-base-spanish-wwm-uncased"
-        )
+        self.tokenizer = transformers.BertTokenizer.from_pretrained(self.tokenizer_name)
         self._collate = functools.partial(
             _collate_wit_items,
             tokenize=functools.partial(
@@ -396,7 +397,7 @@ class LitWITParallel(pl.LightningDataModule):
         )
 
     def train_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
-        # if we train with absurd amounts of data, posibbly don't shuffle
+        # if we train with absurd amounts of data, possibly don't shuffle
         return torch.utils.data.DataLoader(
             dataset=self.train_split,
             batch_size=self.batch_size,
