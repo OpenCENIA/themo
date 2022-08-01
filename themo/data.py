@@ -1,4 +1,5 @@
 import collections
+import functools
 import inspect
 import os
 import pathlib
@@ -18,7 +19,11 @@ import tqdm
 import transformers
 import typing_extensions as tpx
 
-__all__ = ["WITParallel", "WITParallelDataModule"]
+from .model import BERT_MODEL_NAME
+
+__all__ = ["WITParallel", "LitWITParallel", "TARGET_FEATURES_MODEL"]
+
+TARGET_FEATURES_MODEL = "openai/clip-vit-large-patch14"
 
 _TQDM_WIDTH = 120
 _NS = types.SimpleNamespace
@@ -26,7 +31,29 @@ _NS = types.SimpleNamespace
 
 # TODO: name field is sometimes just a name (a str) or sometimes a full pathlib.Path,
 # maybe we should fix this
-_FileMeta = collections.namedtuple("_FileMeta", ["name", "size", "nrows"])
+class _FileMeta(tp.NamedTuple):
+    name: tp.Union[str, pathlib.Path]
+    size: int
+    nrows: int
+
+
+class _WITItem(tp.NamedTuple):
+    source: str
+    target: str
+    target_features: npt.NDArray[np.float32]
+
+
+class _Batch(tp.NamedTuple):
+    input: transformers.BatchEncoding
+    target: torch.Tensor
+
+
+def _collate_wit_items(
+    batch: tp.Sequence[_WITItem],
+    tokenize: tp.Callable[[tp.Sequence[str]], transformers.BatchEncoding],
+) -> _Batch:
+    source_sentences, _, target_features = zip(*batch)
+    return _Batch(tokenize(source_sentences), torch.tensor(np.stack(target_features)))
 
 
 def build_parallel(files: tp.List[_FileMeta], langs: tp.Tuple[str, str]) -> pa.Table:
@@ -127,13 +154,18 @@ def compute_target_features(
         warnings.warn("No GPU found, switching to CPU mode", RuntimeWarning)
     model.to(device)
     results = []
-    for batch in tqdm.tqdm(dloader):
+    for batch in tqdm.tqdm(
+        dloader,
+        desc="Computing features",
+        unit="batch",
+        ncols=_TQDM_WIDTH,
+    ):
         features = model(**batch.to(device)).pooler_output.cpu().data.numpy()
         results.append(features)
     return np.concatenate(results)
 
 
-class WITParallel(torch.utils.data.Dataset):
+class WITParallel(torch.utils.data.Dataset[_WITItem]):
     """Interface to WIT parallel dataset.
 
     Downloads (or expects) files in this filesystem structure:
@@ -216,7 +248,7 @@ class WITParallel(torch.utils.data.Dataset):
         split: tpx.Literal["train", "val", "test"],
         langs: tp.Tuple[str, str] = ("es", "en"),
         download: bool = False,
-        clip_version: str = "openai/clip-vit-large-patch14",
+        clip_version: str = TARGET_FEATURES_MODEL,
     ) -> None:
         self.datadir = datadir
         self.split = split
@@ -246,11 +278,11 @@ class WITParallel(torch.utils.data.Dataset):
             num_workers=os.cpu_count() or 0,
         )
 
-    def __getitem__(self, key: int) -> tp.Tuple[str, str, npt.NDArray[np.float32]]:
+    def __getitem__(self, key: int) -> _WITItem:
         source = self.parallel_items["source"][key]
         target = self.parallel_items["target"][key]
         features = self.target_features[key]
-        return str(source), str(target), features
+        return _WITItem(str(source), str(target), features)
 
     def __len__(self) -> int:
         return len(self.parallel_items)
@@ -308,15 +340,86 @@ class WITParallel(torch.utils.data.Dataset):
         )
 
 
-class WITParallelDataModule(pl.LightningDataModule):
-    """WIP (work in Progress, not wit, wikipedia-based image Text)"""
+class LitWITParallel(pl.LightningDataModule):
+    # these attrs are set in __init__, and work mostly as hparams
+    datadir: str
+    batch_size: int
+    max_sequence_length: int
+    tokenizer_name: str
+    # these attrs are set in setup method
+    # splits are optional because some might not be present depending on stage
+    train_split: tp.Optional[WITParallel]
+    val_split: tp.Optional[WITParallel]
+    test_split: tp.Optional[WITParallel]
 
-    def __init__(self, datadir: str, batch_size: int) -> None:
+    tokenizer: transformers.BertTokenizer
+    _collate: tp.Callable[[tp.Sequence[_WITItem]], _Batch]
+
+    def __init__(
+        self,
+        datadir: str,
+        batch_size: int,
+        max_sequence_length: int,
+        tokenizer_name: str = BERT_MODEL_NAME,
+    ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=("datadir",))
 
         self.datadir = datadir
         self.batch_size = batch_size
+        self.max_sequence_length = max_sequence_length
+        self.tokenizer_name = tokenizer_name
 
-    def prepare_data(self):
+    def prepare_data(self) -> None:
         WITParallel.download(self.datadir)
+
+    def setup(
+        self, stage: tp.Optional[tpx.Literal["fit", "validate", "test"]] = None
+    ) -> None:
+        if stage in ("fit", "validate", None):
+            self.val_split = WITParallel(self.datadir, "val")
+        if stage in ("fit", None):
+            self.train_split = WITParallel(self.datadir, "train")
+        if stage in ("test", None):
+            self.test_split = WITParallel(self.datadir, "test")
+
+        # always load tokenizer
+        self.tokenizer = transformers.BertTokenizer.from_pretrained(self.tokenizer_name)
+        self._collate = functools.partial(
+            _collate_wit_items,
+            tokenize=functools.partial(
+                self.tokenizer,
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_sequence_length,
+                return_tensors="pt",
+            ),
+        )
+
+    def train_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
+        # if we train with absurd amounts of data, possibly don't shuffle
+        return torch.utils.data.DataLoader(
+            dataset=self.train_split,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=os.cpu_count() or 0,
+            collate_fn=self._collate,
+        )
+
+    def val_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
+        return torch.utils.data.DataLoader(
+            dataset=self.val_split,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() or 0,
+            collate_fn=self._collate,
+        )
+
+    def test_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
+        return torch.utils.data.DataLoader(
+            dataset=self.test_split,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() or 0,
+            collate_fn=self._collate,
+        )
