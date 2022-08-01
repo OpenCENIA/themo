@@ -5,11 +5,15 @@ import transformers
 
 import themo.data as data
 
+__all__ = ["ThemoTextModel", "LitThemoTextModel", "BERT_MODEL_NAME"]
+
+BERT_MODEL_NAME = "dccuchile/bert-base-spanish-wwm-uncased"
+
 
 class ThemoTextModel(nn.Module):
     def __init__(self, embed_dim: int) -> None:
         self.transformer = transformers.BertModel.from_pretrained(
-            "dccuchile/bert-base-spanish-wwm-uncased", add_pooling_layer=False
+            BERT_MODEL_NAME, add_pooling_layer=False
         )
         transformer_width = self.transformer.config.hidden_size
         self.ln_final = nn.LayerNorm(transformer_width)
@@ -23,7 +27,7 @@ class ThemoTextModel(nn.Module):
 
     def reset_parameters(self) -> None:
         # only initialize projection i guess
-        # taken from https://github.com/openai/CLIP/blob/f69a9bc217f6df9213628848b3f9b0b6fc542401/clip/model.py#L326
+        # taken from https://github.com/openai/CLIP/blob/f69a9bc217f6df9213628848b3f9b0b6fc542401/clip/model.py#L326 # noqa: E501
         for parameter in self.projection.parameters():
             nn.init.normal_(parameter, std=self.transformer.config.hidden_size**-0.5)
 

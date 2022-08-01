@@ -19,7 +19,9 @@ import tqdm
 import transformers
 import typing_extensions as tpx
 
-__all__ = ["WITParallel", "LitWitParallel", "TARGET_FEATURES_MODEL"]
+from .model import BERT_MODEL_NAME
+
+__all__ = ["WITParallel", "LitWITParallel", "TARGET_FEATURES_MODEL"]
 
 TARGET_FEATURES_MODEL = "openai/clip-vit-large-patch14"
 
@@ -343,6 +345,7 @@ class LitWITParallel(pl.LightningDataModule):
     datadir: str
     batch_size: int
     max_sequence_length: int
+    tokenizer_name: str
     # these attrs are set in setup method
     # splits are optional because some might not be present depending on stage
     train_split: tp.Optional[WITParallel]
@@ -357,6 +360,7 @@ class LitWITParallel(pl.LightningDataModule):
         datadir: str,
         batch_size: int,
         max_sequence_length: int,
+        tokenizer_name: str = BERT_MODEL_NAME,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=("datadir",))
@@ -364,6 +368,7 @@ class LitWITParallel(pl.LightningDataModule):
         self.datadir = datadir
         self.batch_size = batch_size
         self.max_sequence_length = max_sequence_length
+        self.tokenizer_name = tokenizer_name
 
     def prepare_data(self) -> None:
         WITParallel.download(self.datadir)
@@ -379,9 +384,7 @@ class LitWITParallel(pl.LightningDataModule):
             self.test_split = WITParallel(self.datadir, "test")
 
         # always load tokenizer
-        self.tokenizer = transformers.BertTokenizer.from_pretrained(
-            "dccuchile/bert-base-spanish-wwm-uncased"
-        )
+        self.tokenizer = transformers.BertTokenizer.from_pretrained(self.tokenizer_name)
         self._collate = functools.partial(
             _collate_wit_items,
             tokenize=functools.partial(
@@ -394,7 +397,7 @@ class LitWITParallel(pl.LightningDataModule):
         )
 
     def train_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
-        # if we train with absurd amounts of data, posibbly don't shuffle
+        # if we train with absurd amounts of data, possibly don't shuffle
         return torch.utils.data.DataLoader(
             dataset=self.train_split,
             batch_size=self.batch_size,
