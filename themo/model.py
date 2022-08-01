@@ -7,21 +7,20 @@ import themo.data as data
 
 __all__ = ["ThemoTextModel", "LitThemoTextModel", "BERT_MODEL_NAME"]
 
+# should be kept in sync with themo.data.BERT_MODEL_NAME, this is bad design
+# and we should look into this in the (near) future
 BERT_MODEL_NAME = "dccuchile/bert-base-spanish-wwm-uncased"
 
 
 class ThemoTextModel(nn.Module):
     def __init__(self, embed_dim: int) -> None:
+        super().__init__()
         self.transformer = transformers.BertModel.from_pretrained(
             BERT_MODEL_NAME, add_pooling_layer=False
         )
         transformer_width = self.transformer.config.hidden_size
         self.ln_final = nn.LayerNorm(transformer_width)
-        self.projection = (
-            nn.Identity()
-            if embed_dim == transformer_width
-            else nn.Linear(transformer_width, embed_dim, bias=False)
-        )
+        self.projection = nn.Linear(transformer_width, embed_dim, bias=False)
 
         self.reset_parameters()
 
@@ -41,8 +40,7 @@ class ThemoTextModel(nn.Module):
 
 class LitThemoTextModel(ThemoTextModel, pl.LightningModule):
     def __init__(self, embed_dim: int, learn_rate: float) -> None:
-        super(ThemoTextModel, self).__init__()
-        super(LitThemoTextModel, self).__init__(embed_dim)
+        super().__init__(embed_dim)
 
         self.save_hyperparameters()
         self.learn_rate = learn_rate
