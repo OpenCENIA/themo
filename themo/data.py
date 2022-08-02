@@ -376,7 +376,13 @@ def translate(
 
     def collate_fn(batch: tp.Sequence[pa.StringScalar]) -> transformers.BatchEncoding:
         as_str = [str(item) for item in batch]
-        return tokenizer(as_str, return_tensors="pt", padding=True)
+        return tokenizer(
+            as_str,
+            padding=True,
+            truncation=True,
+            max_length=model.config.max_length,
+            return_tensors="pt",
+        )
 
     dataloader = torch.utils.data.DataLoader(
         sentences,
