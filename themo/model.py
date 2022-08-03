@@ -7,7 +7,7 @@ import themo.data as data
 
 __all__ = ["ThemoTextModel", "LitThemoTextModel", "BERT_MODEL_NAME"]
 
-# should be kept in sync with themo.data.BERT_MODEL_NAME, this is bad design
+# NOTE: should be kept in sync with themo.data.BERT_MODEL_NAME, this is bad design
 # and we should look into this in the (near) future
 BERT_MODEL_NAME = "dccuchile/bert-base-spanish-wwm-uncased"
 

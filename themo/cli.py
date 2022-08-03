@@ -71,4 +71,3 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
         hparams, metrics=dict(best_loss=checkpoint_callback.best_model_score or -1)
     )
     return checkpoint_callback.best_model_path
-    # return trainer.validate(model, datamodule)
