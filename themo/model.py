@@ -19,7 +19,6 @@ class ThemoTextModel(nn.Module):
             BERT_MODEL_NAME, add_pooling_layer=False
         )
         transformer_width = self.transformer.config.hidden_size
-        self.ln_final = nn.LayerNorm(transformer_width)
         self.projection = nn.Linear(transformer_width, embed_dim, bias=False)
 
         self.reset_parameters()
@@ -32,10 +31,12 @@ class ThemoTextModel(nn.Module):
 
     # same signature as self.transformer
     def forward(self, *args, **kwargs) -> torch.Tensor:
-        last_hidden_state, *_ = self.transformer(*args, **kwargs).values()
-        normalized = self.ln_final(last_hidden_state)
-        first_hidden = normalized[:, 0]
-        return self.projection(first_hidden)
+        last_hidden_state = self.transformer(*args, **kwargs)[0]
+        attn = kwargs["attention_mask"]
+        pooled_hidden = (last_hidden_state * attn.unsqueeze(2)).sum(dim=1) / attn.sum(
+            dim=1
+        )[:, None]
+        return self.projection(pooled_hidden)
 
 
 class LitThemoTextModel(ThemoTextModel, pl.LightningModule):
