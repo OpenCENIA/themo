@@ -1,7 +1,6 @@
 import collections
 import functools
 import inspect
-import os
 import pathlib
 import types
 import typing as tp
@@ -285,11 +284,13 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
         )
 
         # Compute CLIP embeddings
-        self.target_features = memory.cache(compute_target_features)(
+        self.target_features = memory.cache(
+            compute_target_features, ignore=["batch_size", "num_workers"]
+        )(
             self.parallel_items["target"],
             clip_version=self.clip_version,
             batch_size=512,
-            num_workers=os.cpu_count() or 0,
+            num_workers=4,
         )
 
     def __getitem__(self, key: int) -> _WITItem:
@@ -370,9 +371,11 @@ def translate(
         warnings.warn("No GPU found, switching to CPU mode", RuntimeWarning)
 
     print(f"Loading tokenizer for {model_name}")
-    tokenizer = transformers.MarianTokenizer.from_pretrained(model_name)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
     print(f"Loading model {model_name}")
-    model = transformers.MarianMTModel.from_pretrained(model_name).to(device)
+    model = transformers.AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    model.to(device)
+    model.eval()
 
     def collate_fn(batch: tp.Sequence[pa.StringScalar]) -> transformers.BatchEncoding:
         as_str = [str(item) for item in batch]
@@ -387,7 +390,8 @@ def translate(
     dataloader = torch.utils.data.DataLoader(
         sentences,
         batch_size=batch_size,
-        num_workers=os.cpu_count() or 0,
+        shuffle=False,
+        num_workers=4,
         collate_fn=collate_fn,
     )
 
@@ -470,12 +474,12 @@ class WITTranslated(WITParallel):
         )
         # Compute target features using the final table
         self.target_features = memory.cache(
-            compute_target_features, ignore=["batch_size"]
+            compute_target_features, ignore=["batch_size", "num_workers"]
         )(
             self.parallel_items["target"],
             clip_version=self.clip_version,
             batch_size=512,
-            num_workers=os.cpu_count() or 0,
+            num_workers=4,
         )
 
 
@@ -543,7 +547,7 @@ class LitWITParallel(pl.LightningDataModule):
             dataset=self.train_split,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=os.cpu_count() or 0,
+            num_workers=4,
             collate_fn=self._collate,
         )
 
@@ -552,7 +556,7 @@ class LitWITParallel(pl.LightningDataModule):
             dataset=self.val_split,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=os.cpu_count() or 0,
+            num_workers=4,
             collate_fn=self._collate,
         )
 
@@ -561,7 +565,7 @@ class LitWITParallel(pl.LightningDataModule):
             dataset=self.test_split,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=os.cpu_count() or 0,
+            num_workers=4,
             collate_fn=self._collate,
         )
 
