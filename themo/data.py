@@ -19,7 +19,13 @@ import tqdm
 import transformers
 import typing_extensions as tpx
 
-__all__ = ["WITParallel", "LitWITParallel", "TARGET_FEATURES_MODEL"]
+__all__ = [
+    "WITParallel",
+    "LitWITParallel",
+    "TARGET_FEATURES_MODEL",
+    "WITTranslated",
+    "LitWITTranslated",
+]
 
 TARGET_FEATURES_MODEL = "openai/clip-vit-large-patch14"
 BERT_MODEL_NAME = "dccuchile/bert-base-spanish-wwm-uncased"
@@ -265,8 +271,10 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
 
         if download:
             self.download(datadir, split)
+
+        memory = joblib.Memory(datadir, verbose=0)
         # I am not too sold on using filedata._replace here, but it gets the job done
-        self.parallel_items = joblib.Memory(datadir, verbose=0).cache(build_parallel)(
+        self.parallel_items = memory.cache(build_parallel)(
             [
                 filedata._replace(
                     name=pathlib.Path(datadir) / self.META.dataset_name / filedata.name
@@ -277,9 +285,7 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
         )
 
         # Compute CLIP embeddings
-        self.target_features = joblib.Memory(datadir, verbose=0).cache(
-            compute_target_features
-        )(
+        self.target_features = memory.cache(compute_target_features)(
             self.parallel_items["target"],
             clip_version=self.clip_version,
             batch_size=512,
@@ -353,7 +359,129 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
         )
 
 
+def translate(
+    sentences: tp.Sequence[pa.StringScalar],
+    model_name: str,
+    batch_size: int,
+) -> pa.Array:
+    print("Translating sentences, this could take some time...")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cpu":
+        warnings.warn("No GPU found, switching to CPU mode", RuntimeWarning)
+
+    print(f"Loading tokenizer for {model_name}")
+    tokenizer = transformers.MarianTokenizer.from_pretrained(model_name)
+    print(f"Loading model {model_name}")
+    model = transformers.MarianMTModel.from_pretrained(model_name).to(device)
+
+    def collate_fn(batch: tp.Sequence[pa.StringScalar]) -> transformers.BatchEncoding:
+        as_str = [str(item) for item in batch]
+        return tokenizer(
+            as_str,
+            padding=True,
+            truncation=True,
+            max_length=model.config.max_length,
+            return_tensors="pt",
+        )
+
+    dataloader = torch.utils.data.DataLoader(
+        sentences,
+        batch_size=batch_size,
+        num_workers=os.cpu_count() or 0,
+        collate_fn=collate_fn,
+    )
+
+    translated = []
+    with torch.no_grad():
+        for batch in tqdm.tqdm(
+            dataloader, desc="Translating sentences", unit="batch", ncols=_TQDM_WIDTH
+        ):
+            batch.to(device)
+            output_ids = model.generate(**batch, max_new_tokens=100)
+            translated += tokenizer.batch_decode(output_ids, skip_special_tokens=True)
+
+    return pa.array(translated)
+
+
+class WITTranslated(WITParallel):
+    def __init__(
+        self,
+        datadir: str,
+        split: tpx.Literal["train", "val", "test"],
+        langs: tp.Tuple[str, str] = ("es", "en"),
+        download: bool = False,
+        clip_version: str = TARGET_FEATURES_MODEL,
+    ) -> None:
+        self.datadir = datadir
+        self.split = split
+        self.langs = langs
+        self.clip_version = clip_version
+
+        print(f"Loading {self!r}")
+
+        if download:
+            self.download(datadir, split)
+
+        memory = joblib.Memory(datadir, verbose=0)
+        # Load original parallel items
+        # ============================
+        og_parallel_items = memory.cache(build_parallel)(
+            [
+                filedata._replace(
+                    name=pathlib.Path(datadir) / self.META.dataset_name / filedata.name
+                )
+                for filedata in getattr(self.META.files, split)
+            ],
+            langs,
+        )
+        keys, sources, targets = og_parallel_items.itercolumns()
+        column_names = og_parallel_items.column_names
+
+        # Prepare stuff for translation
+        # =============================================
+        translation_model_template = "Helsinki-NLP/opus-mt-{}-{}"
+        batch_size = 64
+
+        # Translate source sentences to target lang
+        # =========================================
+        source_translation = memory.cache(translate, ignore=["batch_size"])(
+            sources,
+            translation_model_template.format(*langs),
+            batch_size=batch_size,
+        )
+        source_translated_table = pa.table(
+            [keys, sources, source_translation], names=column_names
+        )
+
+        # Translate target sentences to source lang
+        # =========================================
+        target_translation = memory.cache(translate, ignore=["batch_size"])(
+            targets,
+            translation_model_template.format(*langs[::-1]),
+            batch_size=batch_size,
+        )
+        target_translated_table = pa.table(
+            [keys, target_translation, targets], names=column_names
+        )
+
+        # Build final table
+        self.parallel_items = pa.concat_tables(
+            [source_translated_table, target_translated_table]
+        )
+        # Compute target features using the final table
+        self.target_features = memory.cache(
+            compute_target_features, ignore=["batch_size"]
+        )(
+            self.parallel_items["target"],
+            clip_version=self.clip_version,
+            batch_size=512,
+            num_workers=os.cpu_count() or 0,
+        )
+
+
 class LitWITParallel(pl.LightningDataModule):
+    _dataset_cls: tp.ClassVar[type] = WITParallel
+
     # these attrs are set in __init__, and work mostly as hparams
     datadir: str
     batch_size: int
@@ -384,17 +512,17 @@ class LitWITParallel(pl.LightningDataModule):
         self.tokenizer_name = tokenizer_name
 
     def prepare_data(self) -> None:
-        WITParallel.download(self.datadir)
+        self._dataset_cls.download(self.datadir)
 
     def setup(
         self, stage: tp.Optional[tpx.Literal["fit", "validate", "test"]] = None
     ) -> None:
         if stage in ("fit", "validate", None):
-            self.val_split = WITParallel(self.datadir, "val")
+            self.val_split = self._dataset_cls(self.datadir, "val")
         if stage in ("fit", None):
-            self.train_split = WITParallel(self.datadir, "train")
+            self.train_split = self._dataset_cls(self.datadir, "train")
         if stage in ("test", None):
-            self.test_split = WITParallel(self.datadir, "test")
+            self.test_split = self._dataset_cls(self.datadir, "test")
 
         # always load tokenizer
         self.tokenizer = transformers.BertTokenizer.from_pretrained(self.tokenizer_name)
@@ -436,3 +564,7 @@ class LitWITParallel(pl.LightningDataModule):
             num_workers=os.cpu_count() or 0,
             collate_fn=self._collate,
         )
+
+
+class LitWITTranslated(LitWITParallel):
+    _dataset_cls = WITTranslated

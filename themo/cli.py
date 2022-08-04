@@ -8,7 +8,7 @@ import themo
 
 def _configure_libs() -> None:
     # Transformers man, so f***ing verbose
-    transformers.logging.disable_progress_bar()
+    # transformers.logging.disable_progress_bar()
     transformers.logging.set_verbosity_error()
     pass
 
@@ -32,7 +32,7 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
         themo.data.TARGET_FEATURES_MODEL
     )
 
-    datamodule = themo.LitWITParallel(
+    datamodule = themo.LitWITTranslated(
         datadir="data", batch_size=batch_size, max_sequence_length=max_sequence_length
     )
     model = themo.LitThemoTextModel(
@@ -59,7 +59,7 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
         logger=logger,
         callbacks=[
             pl.callbacks.EarlyStopping(
-                patience=3,
+                patience=5,
                 **checkpoint_callback_kwargs,
             ),
             checkpoint_callback,
@@ -71,3 +71,4 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
         hparams, metrics=dict(best_loss=checkpoint_callback.best_model_score or -1)
     )
     return checkpoint_callback.best_model_path
+    # return trainer.validate(model, datamodule)

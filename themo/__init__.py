@@ -1,4 +1,11 @@
-from .data import LitWITParallel, WITParallel  # noqa:F401
-from .model import LitThemoTextModel, ThemoTextModel  # noqa:F401
+from .data import LitWITParallel, LitWITTranslated, WITParallel, WITTranslated
+from .model import LitThemoTextModel, ThemoTextModel
 
-__all__ = ["WITParallel", "LitWITParallel" "ThemoTextModel", "LitThemoTextModel"]
+__all__ = [
+    "WITParallel",
+    "WITTranslated",
+    "LitWITParallel",
+    "LitWITTranslated",
+    "ThemoTextModel",
+    "LitThemoTextModel",
+]
