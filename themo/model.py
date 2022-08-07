@@ -161,6 +161,7 @@ class LitThemoTextModel(ThemoTextModel, pl.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
+                "interval": "step",
                 "name": f"lr/{self._optimizer_name}",
             },
         }
