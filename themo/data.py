@@ -18,16 +18,14 @@ import tqdm
 import transformers
 import typing_extensions as tpx
 
+from ._constants import DEFAULT_FEATURES_MODEL, DEFAULT_TEXT_MODEL
+
 __all__ = [
     "WITParallel",
     "LitWITParallel",
-    "TARGET_FEATURES_MODEL",
     "WITTranslated",
     "LitWITTranslated",
 ]
-
-TARGET_FEATURES_MODEL = "openai/clip-vit-large-patch14"
-BERT_MODEL_NAME = "dccuchile/bert-base-spanish-wwm-uncased"
 
 _TQDM_WIDTH = 120
 _NS = types.SimpleNamespace
@@ -259,7 +257,7 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
         split: tpx.Literal["train", "val", "test"],
         langs: tp.Tuple[str, str] = ("es", "en"),
         download: bool = False,
-        clip_version: str = TARGET_FEATURES_MODEL,
+        clip_version: str = DEFAULT_FEATURES_MODEL,
     ) -> None:
         self.datadir = datadir
         self.split = split
@@ -309,13 +307,12 @@ class WITParallel(torch.utils.data.Dataset[_WITItem]):
 
         splits = (split,) if split else ("train", "val", "test")
 
-        print(f"Downloading files to {basepath}, this might take a while...")
         all_files = [
             fdata for split in splits for fdata in getattr(cls.META.files, split)
         ]
         if all((basepath / filedata.name).exists() for filedata in all_files):
-            print(f"All files already in {basepath}, skipping...")
             return
+        print(f"Downloading files to {basepath}, this might take a while...")
         for filedata in all_files:
             full_path = basepath / filedata.name
             if full_path.exists():
@@ -414,7 +411,7 @@ class WITTranslated(WITParallel):
         split: tpx.Literal["train", "val", "test"],
         langs: tp.Tuple[str, str] = ("es", "en"),
         download: bool = False,
-        clip_version: str = TARGET_FEATURES_MODEL,
+        clip_version: str = DEFAULT_FEATURES_MODEL,
     ) -> None:
         self.datadir = datadir
         self.split = split
@@ -505,7 +502,8 @@ class LitWITParallel(pl.LightningDataModule):
         datadir: str,
         batch_size: int,
         max_sequence_length: int,
-        tokenizer_name: str = BERT_MODEL_NAME,
+        clip_version: str,
+        tokenizer_name: str = DEFAULT_TEXT_MODEL,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=("datadir",))
@@ -513,6 +511,7 @@ class LitWITParallel(pl.LightningDataModule):
         self.datadir = datadir
         self.batch_size = batch_size
         self.max_sequence_length = max_sequence_length
+        self.clip_version = clip_version
         self.tokenizer_name = tokenizer_name
 
     def prepare_data(self) -> None:
@@ -522,11 +521,17 @@ class LitWITParallel(pl.LightningDataModule):
         self, stage: tp.Optional[tpx.Literal["fit", "validate", "test"]] = None
     ) -> None:
         if stage in ("fit", "validate", None):
-            self.val_split = self._dataset_cls(self.datadir, "val")
+            self.val_split = self._dataset_cls(
+                self.datadir, "val", clip_version=self.clip_version
+            )
         if stage in ("fit", None):
-            self.train_split = self._dataset_cls(self.datadir, "train")
+            self.train_split = self._dataset_cls(
+                self.datadir, "train", clip_version=self.clip_version
+            )
         if stage in ("test", None):
-            self.test_split = self._dataset_cls(self.datadir, "test")
+            self.test_split = self._dataset_cls(
+                self.datadir, "test", clip_version=self.clip_version
+            )
 
         # always load tokenizer
         self.tokenizer = transformers.BertTokenizer.from_pretrained(self.tokenizer_name)
