@@ -32,12 +32,13 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
         themo.data.TARGET_FEATURES_MODEL
     )
 
-    datamodule = themo.LitWITTranslated(
+    datamodule = themo.LitTatoebaParallel(
         datadir="data", batch_size=batch_size, max_sequence_length=max_sequence_length
     )
     model = themo.LitThemoTextModel(
         embed_dim=clip_config.hidden_size, learn_rate=learn_rate
     )
+    print("Data module ready!")
     # Trainer config
     # ==============
     checkpoint_callback_kwargs = {
@@ -54,6 +55,7 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
         name="default",
         default_hp_metric=False,
     )
+    print("im about to load the trainer")
     trainer = pl.Trainer(
         gpus=-torch.cuda.is_available(),  # super cursed
         logger=logger,
