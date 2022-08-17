@@ -25,7 +25,8 @@ __all__ = [
     "TARGET_FEATURES_MODEL",
     "WITTranslated",
     "LitWITTranslated",
-    "TatoebaParallel"
+    "TatoebaParallel",
+    "LitFloresParallel"
 ]
 
 TARGET_FEATURES_MODEL = "openai/clip-vit-large-patch14"
@@ -54,16 +55,125 @@ class _ParallelItem(tp.NamedTuple):
     target_features: npt.NDArray[np.float32]
 
 
-# class FloresParallel():
-#     def __init__(
-#         self,
-#         datadir: str,
-#         split: tpx.Literal["train", "val", "test"],
-#         langs: tp.Tuple[str, str] = ("es", "en"),
-#         download: bool = False,
-#         clip_version: str = TARGET_FEATURES_MODEL,
-#     ) -> None:
-#         super().__init__(datadir, split, langs, download, clip_version)
+def _collate_parallel_items(
+    batch: tp.Sequence[_ParallelItem],
+    tokenize: tp.Callable[[tp.Sequence[str]], transformers.BatchEncoding],
+) -> _Batch:
+    source_sentences, _, target_features = zip(*batch)
+    return _Batch(tokenize(source_sentences), torch.tensor(np.stack(target_features).astype('float32')))
+
+
+class FloresParallel(torch.utils.data.Dataset[_ParallelItem]):
+    dataset_name: str = "facebook/flores"
+    def __init__(
+        self,
+        datadir: str,
+        split: tpx.Literal["train", "val", "test"],
+        clip_version: str = TARGET_FEATURES_MODEL,
+        download: bool = False,
+    ) -> None:
+        self.datadir = datadir
+        self.clip_version = clip_version
+        self.split = split
+
+        if download:
+            self.download(datadir)
+
+        self.parallel_items = datasets.load_from_disk(
+            dataset_path=pathlib.Path(datadir) / self.dataset_name,
+            keep_in_memory=True
+        )
+        self.parallel_items = self.parallel_items[split]
+
+    @classmethod
+    def download(cls, datadir: str, split=None):
+        basepath = pathlib.Path(datadir) / cls.dataset_name
+        basepath.mkdir(exist_ok=True, parents=True)
+
+        splits = (split,) if split else ("train", "val", "test")
+
+        print(f"Downloading files to {basepath}, this might take a while...")
+        if all((basepath / split_type).exists() for split_type in splits):
+            print(f"All files already in {basepath}, skipping...")
+            return
+
+        dset_es = datasets.load_dataset(cls.dataset_name, "spa_Latn")
+        dset_en = datasets.load_dataset(cls.dataset_name, "eng_Latn")
+        device = "cuda"
+        tokenizer = transformers.CLIPTokenizer.from_pretrained(TARGET_FEATURES_MODEL)
+        model = transformers.CLIPTextModel.from_pretrained(TARGET_FEATURES_MODEL)
+        model = model.eval()
+        model.requires_grad_(False)
+        model.to(device)
+
+        def compute_features(
+            target_sentence,
+        ):
+            tokenized = tokenizer(
+                target_sentence,
+                truncation=True,
+                max_length=77,
+                padding="max_length",
+                return_tensors="pt"
+            )
+            return model(**tokenized.to(device)).pooler_output.cpu().numpy()
+
+        def feature_computer_helper(
+            item,
+            key
+        ):
+            return {"target_features": compute_features(item[key])}
+
+        def process_dset(
+            dset,
+            columns_to_rename,
+            new_column_names
+        ):
+            new_dset = dset.remove_columns(list(set(columns_to_rename) ^ set(dset["dev"].column_names)))
+            new_dset = new_dset.rename_columns(dict(zip(columns_to_rename, new_column_names)))
+            return new_dset
+
+        feature_computer = functools.partial(
+            feature_computer_helper,
+            key="target",
+        )
+
+        es_dset = process_dset(
+            dset=dset_es,
+            columns_to_rename=['sentence'],
+            new_column_names=['source'],
+        )
+        en_dset = process_dset(
+            dset=dset_en,
+            columns_to_rename=['sentence'],
+            new_column_names=['target'],
+        )
+        en_dset = en_dset.map(
+            feature_computer,
+            batched=True,
+            batch_size=256,
+        )
+
+        dset = {}
+        # dev: 997 items | devtest: 1012 items
+        dset['train'] = datasets.concatenate_datasets([es_dset['devtest'], en_dset['devtest']], axis=1)
+        test_val = datasets.concatenate_datasets([es_dset["dev"], en_dset['dev']], axis=1)
+        test_val = test_val.train_test_split(test_size=0.5)
+        dset['test'] = test_val['train']
+        dset['val'] = test_val['test']
+
+        processed_dset = datasets.DatasetDict(dset)
+
+        processed_dset.save_to_disk(basepath)
+
+    def __getitem__(self, key: int) -> _ParallelItem:
+        source = self.parallel_items[key]["source"]
+        target = self.parallel_items[key]["target"]
+        features = self.parallel_items[key]["target_features"]
+        return _ParallelItem(str(source), str(target), features)
+
+    def __len__(self) -> int:
+        return len(self.parallel_items)
 
 
 class TatoebaParallel(torch.utils.data.Dataset[_ParallelItem]):
@@ -83,7 +193,10 @@ class TatoebaParallel(torch.utils.data.Dataset[_ParallelItem]):
         if download:
             self.download(datadir)
 
-        self.parallel_items = datasets.load_from_disk(datadir)
+        self.parallel_items = datasets.load_from_disk(
+            dataset_path=pathlib.Path(datadir) / self.dataset_name,
+            keep_in_memory=True
+        )
         self.parallel_items = self.parallel_items[split]
 
     @classmethod
@@ -131,12 +244,12 @@ class TatoebaParallel(torch.utils.data.Dataset[_ParallelItem]):
             'test': processed_dset_test_valid['test'],
             'val': processed_dset_test_valid['train']})
 
-        processed_dset.save_to_disk(datadir)
+        processed_dset.save_to_disk(basepath)
 
     def __getitem__(self, key: int) -> _ParallelItem:
-        source = self.parallel_items["source"][key]
-        target = self.parallel_items["target"][key]
-        features = self.parallel_items["target_features"][key]
+        source = self.parallel_items[key]["source"]
+        target = self.parallel_items[key]["target"]
+        features = self.parallel_items[key]["target_features"]
         return _ParallelItem(str(source), str(target), features)
 
     def __len__(self) -> int:
@@ -153,16 +266,22 @@ class TedParallel():
         super().__init__()
 
 
-def _collate_wit_items(
-    batch: tp.Sequence[_ParallelItem],
-    tokenize: tp.Callable[[tp.Sequence[str]], transformers.BatchEncoding],
-) -> _Batch:
-    source_sentences, _, target_features = zip(*batch)
-    return _Batch(tokenize(source_sentences), torch.tensor(np.stack(target_features)))
-
-
 class LitTatoebaParallel(pl.LightningDataModule):
     _dataset_cls: tp.ClassVar[type] = TatoebaParallel
+
+    # these attrs are set in __init__, and work mostly as hparams
+    datadir: str
+    batch_size: int
+    max_sequence_length: int
+    tokenizer_name: str
+    # these attrs are set in setup method
+    # splits are optional because some might not be present depending on stage
+    train_split: tp.Optional[TatoebaParallel]
+    val_split: tp.Optional[TatoebaParallel]
+    test_split: tp.Optional[TatoebaParallel]
+
+    tokenizer: transformers.BertTokenizer
+    _collate: tp.Callable[[tp.Sequence[_ParallelItem]], _Batch]
 
     def __init__(
         self,
@@ -195,7 +314,94 @@ class LitTatoebaParallel(pl.LightningDataModule):
         # always load tokenizer
         self.tokenizer = transformers.BertTokenizer.from_pretrained(self.tokenizer_name)
         self._collate = functools.partial(
-            _collate_wit_items,
+            _collate_parallel_items,
+            tokenize=functools.partial(
+                self.tokenizer,
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_sequence_length,
+                return_tensors="pt",
+            ),
+        )
+
+    def train_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
+        # if we train with absurd amounts of data, possibly don't shuffle
+        return torch.utils.data.DataLoader(
+            dataset=self.train_split,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=4,
+            collate_fn=self._collate,
+        )
+
+    def val_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
+        return torch.utils.data.DataLoader(
+            dataset=self.val_split,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=self._collate,
+        )
+
+    def test_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
+        return torch.utils.data.DataLoader(
+            dataset=self.test_split,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=self._collate,
+        )
+
+
+class LitFloresParallel(pl.LightningDataModule):
+    _dataset_cls: tp.ClassVar[type] = FloresParallel
+
+    # these attrs are set in __init__, and work mostly as hparams
+    datadir: str
+    batch_size: int
+    max_sequence_length: int
+    tokenizer_name: str
+    # these attrs are set in setup method
+    # splits are optional because some might not be present depending on stage
+    train_split: tp.Optional[FloresParallel]
+    val_split: tp.Optional[FloresParallel]
+    test_split: tp.Optional[FloresParallel]
+
+    tokenizer: transformers.BertTokenizer
+    _collate: tp.Callable[[tp.Sequence[_ParallelItem]], _Batch]
+
+    def __init__(
+        self,
+        datadir: str,
+        batch_size: int,
+        max_sequence_length: int,
+        tokenizer_name: str = BERT_MODEL_NAME,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters(ignore=("datadir",))
+
+        self.datadir = datadir
+        self.batch_size = batch_size
+        self.max_sequence_length = max_sequence_length
+        self.tokenizer_name = tokenizer_name
+
+    def prepare_data(self) -> None:
+        self._dataset_cls.download(self.datadir)
+
+    def setup(
+        self, stage: tp.Optional[tpx.Literal["fit", "validate", "test"]] = None
+    ) -> None:
+        if stage in ("fit", "validate", None):
+            self.val_split = self._dataset_cls(self.datadir, "val")
+        if stage in ("fit", None):
+            self.train_split = self._dataset_cls(self.datadir, "train")
+        if stage in ("test", None):
+            self.test_split = self._dataset_cls(self.datadir, "test")
+
+        # always load tokenizer
+        self.tokenizer = transformers.BertTokenizer.from_pretrained(self.tokenizer_name)
+        self._collate = functools.partial(
+            _collate_parallel_items,
             tokenize=functools.partial(
                 self.tokenizer,
                 padding="max_length",
