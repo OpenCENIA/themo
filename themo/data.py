@@ -2,6 +2,7 @@ import collections
 import functools
 import inspect
 import pathlib
+import re
 import types
 import typing as tp
 import warnings
@@ -9,6 +10,7 @@ import warnings
 import joblib
 import numpy as np
 import numpy.typing as npt
+import PIL.Image
 import pyarrow as pa
 import pyarrow.csv
 import pytorch_lightning as pl
@@ -572,3 +574,73 @@ class LitWITParallel(pl.LightningDataModule):
 
 class LitWITTranslated(LitWITParallel):
     _dataset_cls = WITTranslated
+
+
+class _CLIPItem(tp.NamedTuple):
+    text: str
+    image: PIL.Image.Image
+
+
+class XTD10(torch.utils.data.Dataset[_CLIPItem]):
+    name: tp.ClassVar[str] = "xtd10"
+
+    _base_url = (
+        "https://raw.githubusercontent.com/adobe-research/"  # org
+        "Cross-lingual-Test-Dataset-XTD10/"  # repo
+        "d77ff16148468c84287f3efcbf602a015c5e4954/"  # specific commit
+        "XTD10/"  # dir inside repo
+    )
+    _fname_template = "test_1kcaptions_{}.txt"
+    _image_names_url = _base_url + "test_image_names.txt"
+
+    datadir: str
+    fname: str
+
+    captions: tp.List[str]
+    image_names: tp.List[str]
+
+    def __init__(self, datadir: str, lang: str, split: tpx.Literal["test"] = "test"):
+
+        self.datadir = datadir
+        self.fname = self._fname_template.format(lang)
+        self.lang = lang
+        assert split == "test", "XTD10 is a test dataset"
+
+        memory = joblib.Memory(datadir, verbose=0)
+
+        @memory.cache
+        def download_simple_lines(url: str) -> tp.List[str]:
+            """Downloads a simple .txt file and returns the lines as a list"""
+            return requests.get(url).text.splitlines()
+
+        self.captions = download_simple_lines(self._base_url + self.fname)
+        self.image_names = download_simple_lines(self._image_names_url)
+
+        assert all(
+            self._image_path_from_name(image_name).exists()
+            for image_name in self.image_names
+        ), (
+            "Some needed COCO images are missing. "
+            f"Please download COCO and put it in {datadir}/coco"
+        )
+
+    def __getitem__(self, key: int) -> _CLIPItem:
+        image_path = self._image_path_from_name(self.image_names[key])
+        image = PIL.Image.open(image_path)
+        return _CLIPItem(self.captions[key], image)
+
+    def __len__(self) -> int:
+        return len(self.captions)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.datadir!r}, {self.lang!r})"
+
+    def _image_path_from_name(self, image_name: str) -> pathlib.Path:
+        """Simple helper function to determine a COCO image path given its
+        name. Basically prepends the correct split dir to the path name"""
+        match = re.match(r"COCO_(.*)_\d*.jpg", image_name)
+        if not match:
+            raise ValueError(f"Bad image_name format {image_name}")
+
+        splitname = match.group(1)
+        return pathlib.Path(self.datadir) / "coco" / splitname / image_name
