@@ -29,6 +29,7 @@ __all__ = [
     "LitFloresParallel",
     "LitOpusParallel",
     "LitTedParallel",
+    "LitParallel",
 ]
 
 TARGET_FEATURES_MODEL = "openai/clip-vit-large-patch14"
@@ -83,7 +84,7 @@ class ParallelDasaset(torch.utils.data.Dataset[_ParallelItem]):
         self.split = split
 
         if download:
-            self.download(datadir)
+            self.download(datadir, self.cache_dir)
 
         self.parallel_items = datasets.load_from_disk(
             dataset_path=pathlib.Path(datadir) / self.dataset_name, keep_in_memory=True
@@ -303,7 +304,8 @@ class TedParallel(ParallelDasaset):
             dset = datasets.load_dataset(
                 cls.dataset_name,
                 language_pair=("en", "es"),
-                year=year
+                year=year,
+                cache_dir=cache_dir
             )
             dset = dset.flatten()
             dset = dset.rename_column("translation.es", "source")
@@ -406,8 +408,152 @@ class TedParallel(ParallelDasaset):
         return len(self.parallel_items)
 
 
+class ParallelDatasets():
+    dataset_name: str = "parallel_data"
+    # datasets = [TedParallel]
+    # datasets = [TedParallel, FloresParallel]
+    datasets = [FloresParallel, TedParallel, OpusParallel, TatoebaParallel]
+
+    def __init__(
+        self,
+        datadir: str,
+        split: tpx.Literal["train", "val", "test"],
+        download: bool = False,
+    ) -> None:
+        self.datadir = datadir
+        self.split = split
+        self.datasets = [FloresParallel, TedParallel]
+
+        if download:
+            self.download(datadir)
+
+        self.parallel_items = datasets.load_from_disk(
+            dataset_path=pathlib.Path(datadir) / self.dataset_name, keep_in_memory=True
+        )
+        self.parallel_items = self.parallel_items[split]
+        print(f"{split} split counts with {len(self.parallel_items)} items")
+
+
+    @classmethod
+    def download(cls, datadir):
+        basepath = pathlib.Path(datadir) / cls.dataset_name
+        basepath.mkdir(exist_ok=True, parents=True)
+
+        parallel_items = []
+
+        for dataset in cls.datasets:
+            dataset.download(datadir)
+
+            items = datasets.load_from_disk(
+                dataset_path=pathlib.Path(datadir) / dataset.dataset_name
+            )
+            parallel_items.append(items)
+        
+        parallel_dset = {}
+        for split in ["train", "val", "test"]:
+            parallel_dset[split] = datasets.concatenate_datasets([item[split] for item in parallel_items])
+
+        parallel_dset = datasets.DatasetDict(parallel_dset)
+
+        parallel_dset.save_to_disk(basepath)
+
+    def __getitem__(self, key: int) -> _ParallelItem:
+        source = self.parallel_items[key]["source"]
+        target = self.parallel_items[key]["target"]
+        features = self.parallel_items[key]["target_features"]
+        return _ParallelItem(str(source), str(target), features)
+
+    def __len__(self) -> int:
+        return len(self.parallel_items)
+        
+
 class LitParallel(pl.LightningDataModule):
-    pass
+    _dataset_cls: tp.ClassVar[type] = ParallelDatasets
+
+    # these attrs are set in __init__, and work mostly as hparams
+    datadir: str
+    batch_size: int
+    max_sequence_length: int
+    tokenizer_name: str
+    # these attrs are set in setup method
+    # splits are optional because some might not be present depending on stage
+    train_split: tp.Optional[ParallelDatasets]
+    val_split: tp.Optional[ParallelDatasets]
+    test_split: tp.Optional[ParallelDatasets]
+
+    tokenizer: transformers.BertTokenizer
+    _collate: tp.Callable[[tp.Sequence[_ParallelItem]], _Batch]
+
+    def __init__(
+        self,
+        datadir: str,
+        batch_size: int,
+        max_sequence_length: int,
+        tokenizer_name: str = BERT_MODEL_NAME,
+        # datasets = None,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters(ignore=("datadir",))
+
+        self.datadir = datadir
+        # self.datasets = datasets
+        self.batch_size = batch_size
+        self.max_sequence_length = max_sequence_length
+        self.tokenizer_name = tokenizer_name
+
+    def prepare_data(self) -> None:
+        self._dataset_cls.download(self.datadir)
+
+    def setup(
+        self, stage: tp.Optional[tpx.Literal["fit", "validate", "test"]] = None
+    ) -> None:
+        if stage in ("fit", "validate", None):
+            self.val_split = self._dataset_cls(self.datadir, "val")
+        if stage in ("fit", None):
+            self.train_split = self._dataset_cls(self.datadir, "train")
+        if stage in ("test", None):
+            self.test_split = self._dataset_cls(self.datadir, "test")
+
+        # always load tokenizer
+        self.tokenizer = transformers.BertTokenizer.from_pretrained(self.tokenizer_name)
+        self._collate = functools.partial(
+            _collate_parallel_items,
+            tokenize=functools.partial(
+                self.tokenizer,
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_sequence_length,
+                return_tensors="pt",
+            ),
+        )
+
+    def train_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
+        # if we train with absurd amounts of data, possibly don't shuffle
+        return torch.utils.data.DataLoader(
+            dataset=self.train_split,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=4,
+            collate_fn=self._collate,
+        )
+
+    def val_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
+        return torch.utils.data.DataLoader(
+            dataset=self.val_split,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=self._collate,
+        )
+
+    def test_dataloader(self) -> torch.utils.data.DataLoader[_Batch]:
+        return torch.utils.data.DataLoader(
+            dataset=self.test_split,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=self._collate,
+        )
 
 class LitTatoebaParallel(pl.LightningDataModule):
     _dataset_cls: tp.ClassVar[type] = TatoebaParallel
