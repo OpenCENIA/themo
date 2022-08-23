@@ -6,6 +6,7 @@ import re
 import types
 import typing as tp
 import warnings
+import xml.etree.ElementTree as ET
 
 import joblib
 import numpy as np
@@ -643,4 +644,82 @@ class XTD10(torch.utils.data.Dataset[_CLIPItem]):
             raise ValueError(f"Bad image_name format {image_name}")
 
         splitname = match.group(1)
-        return pathlib.Path(self.datadir) / "coco" / splitname / image_name
+        return pathlib.Path(self.datadir) / "mscoco" / splitname / image_name
+
+
+class _ImageNetItem(tp.NamedTuple):
+    image: PIL.Image.Image
+    label: tp.Optional[str]
+
+
+class ImageNet(torch.utils.data.Dataset[_ImageNetItem]):
+    name: tp.ClassVar[str] = "imagenet"
+    _lens = {"val": 50_000, "test": 100_000}
+
+    datadir: str
+    split: tpx.Literal["val", "test"]
+    synset_mapping: dict
+
+    def __init__(self, datadir: str, split: tpx.Literal["val", "test"]) -> None:
+        assert split in (
+            "val",
+            "test",
+        ), "For this work we don't use the train split, so it's not available"
+
+        self.datadir = datadir
+        self.split = split
+
+        with open(pathlib.Path(datadir) / self.name / "LOC_synset_mapping.txt") as file:
+            # NOTE: i am keeping only the first comma-separated field of the
+            # synset description
+            self.synset_mapping = {}
+            for i, line in enumerate(file):
+                wnid, _, descriptions = line.partition(" ")
+                first_description, *_ = (d.strip() for d in descriptions.split(","))
+                self.synset_mapping[wnid] = {
+                    "description": first_description,
+                    "class_idx": i,
+                }
+
+    def __getitem__(self, key: int) -> _ImageNetItem:
+        if not (0 <= key < len(self)):
+            raise IndexError
+        # imagenet files are 1-indexed
+        key = key + 1
+        base_path = pathlib.Path(self.datadir) / self.name / "ILSVRC"
+        if self.split == "val":
+            # only val split has annotations
+            ann_file = (
+                base_path
+                / "Annotations"
+                / "CLS-LOC"
+                / self.split
+                / f"ILSVRC2012_val_{key:08}.xml"
+            )
+            ann_wnid = self.parse_annotation(ann_file)["object"]["name"]
+        else:
+            ann_wnid = None
+
+        image_path = (
+            base_path
+            / "Data"
+            / "CLS-LOC"
+            / self.split
+            / f"ILSVRC2012_{self.split}_{key:08}.JPEG"
+        )
+
+        image = PIL.Image.open(image_path)
+        return _ImageNetItem(image, ann_wnid)
+
+    def __len__(self) -> int:
+        return self._lens[self.split]
+
+    @staticmethod
+    def parse_annotation(xml_path: tp.Union[str, pathlib.Path]) -> dict:
+        def parse_node(node):
+            if len(node) == 0:
+                return node.text
+            else:
+                return {child.tag: parse_node(child) for child in node}
+
+        return parse_node(ET.parse(xml_path).getroot())
