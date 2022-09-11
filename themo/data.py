@@ -1,6 +1,8 @@
 import collections
 import functools
 import inspect
+import operator
+import os
 import pathlib
 import re
 import types
@@ -712,7 +714,7 @@ class LitXTD10(pl.LightningDataModule):
             text=texts, images=images, return_tensors="pt", padding=True
         )
 
-    def test_dataloader(self):
+    def test_dataloader(self) -> torch.utils.data.DataLoader:
         return torch.utils.data.DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
@@ -724,18 +726,29 @@ class LitXTD10(pl.LightningDataModule):
 
 class _ImageNetItem(tp.NamedTuple):
     image: PIL.Image.Image
-    label: tp.Optional[str]
+    prompt: tp.Optional[str]
+    label: tp.Optional[int]
 
 
 class ImageNet(torch.utils.data.Dataset[_ImageNetItem]):
     name: tp.ClassVar[str] = "imagenet"
+    prompt_prefix: str = "a picture of a "
     _lens = {"val": 50_000, "test": 100_000}
 
     datadir: str
     split: tpx.Literal["val", "test"]
-    synset_mapping: dict
+    prompt_lang: str
 
-    def __init__(self, datadir: str, split: tpx.Literal["val", "test"]) -> None:
+    class _SynsetData(tpx.TypedDict):
+        prompt: str
+        class_idx: int
+
+    synset_mapping: tp.Dict[str, _SynsetData]
+    english_classes: tp.List[str]
+
+    def __init__(
+        self, datadir: str, split: tpx.Literal["val", "test"], prompt_lang: str
+    ) -> None:
         assert split in (
             "val",
             "test",
@@ -743,18 +756,42 @@ class ImageNet(torch.utils.data.Dataset[_ImageNetItem]):
 
         self.datadir = datadir
         self.split = split
+        self.prompt_lang = prompt_lang
 
+        wnids = []
+        self.english_classes = []
         with open(pathlib.Path(datadir) / self.name / "LOC_synset_mapping.txt") as file:
             # NOTE: i am keeping only the first comma-separated field of the
             # synset description
-            self.synset_mapping = {}
             for i, line in enumerate(file):
                 wnid, _, descriptions = line.partition(" ")
                 first_description, *_ = (d.strip() for d in descriptions.split(","))
-                self.synset_mapping[wnid] = {
-                    "description": first_description,
-                    "class_idx": i,
-                }
+                wnids.append(wnid)
+                self.english_classes.append(first_description)
+
+        english_prompts = [self.prompt_prefix + name for name in self.english_classes]
+        # preeetty nasty formating, not gonna lie
+        translated_prompts = [
+            str(prompt)
+            for prompt in joblib.Memory(datadir, verbose=0).cache(
+                ignore=["batch_size"]
+            )(translate)(
+                english_prompts,
+                f"Helsinki-NLP/opus-mt-en-{prompt_lang}",
+                batch_size=100,
+            )
+        ]
+        self.synset_mapping = {}
+        for i, (wnid, prompt) in enumerate(zip(wnids, translated_prompts)):
+            self.synset_mapping[wnid] = {"prompt": prompt, "class_idx": i}
+
+    @property
+    def all_prompts(self) -> tp.List[str]:
+        # since py37 dict insertion order is guaranteed
+        # im sceptic
+        syn_vals = self.synset_mapping.values()
+        sorted_vals = sorted(syn_vals, key=operator.itemgetter("class_idx"))
+        return [v["prompt"] for v in sorted_vals]
 
     def __getitem__(self, key: int) -> _ImageNetItem:
         if not (0 <= key < len(self)):
@@ -762,6 +799,8 @@ class ImageNet(torch.utils.data.Dataset[_ImageNetItem]):
         # imagenet files are 1-indexed
         key = key + 1
         base_path = pathlib.Path(self.datadir) / self.name / "ILSVRC"
+        prompt: tp.Optional[str] = None
+        label: tp.Optional[int] = None
         if self.split == "val":
             # only val split has annotations
             ann_file = (
@@ -772,8 +811,8 @@ class ImageNet(torch.utils.data.Dataset[_ImageNetItem]):
                 / f"ILSVRC2012_val_{key:08}.xml"
             )
             ann_wnid = self.parse_annotation(ann_file)["object"]["name"]
-        else:
-            ann_wnid = None
+            prompt = self.synset_mapping[ann_wnid]["prompt"]
+            label = self.synset_mapping[ann_wnid]["class_idx"]
 
         image_path = (
             base_path
@@ -784,7 +823,7 @@ class ImageNet(torch.utils.data.Dataset[_ImageNetItem]):
         )
 
         image = PIL.Image.open(image_path)
-        return _ImageNetItem(image, ann_wnid)
+        return _ImageNetItem(image, prompt, label)
 
     def __len__(self) -> int:
         return self._lens[self.split]
@@ -798,3 +837,89 @@ class ImageNet(torch.utils.data.Dataset[_ImageNetItem]):
                 return {child.tag: parse_node(child) for child in node}
 
         return parse_node(ET.parse(xml_path).getroot())
+
+
+class LitImageNet(pl.LightningDataModule):
+    """LightningDataModule for the val and test splits of ImageNet
+
+    >>> datamodule = LitImageNet(
+    ...     datadir="data",
+    ...     prompt_lang="es",
+    ...     batch_size=32,
+    ...     tokenizer_version="dccuchile/bert-base-spanish-wwm-uncased",
+    ...     feature_extractor_version="openai/clip-vit-large-patch14",
+    ... )
+    >>> datamodule.setup("test")
+    >>> len(datamodule.test_dataset)
+    50000
+    """
+
+    def __init__(
+        self,
+        datadir: str,
+        prompt_lang: str,
+        batch_size: int,
+        tokenizer_version: str,
+        feature_extractor_version: str,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters(ignore=("datadir",))
+
+        self.datadir = datadir
+        self.prompt_lang = prompt_lang
+        self.batch_size = batch_size
+        self.tokenizer_version = tokenizer_version
+        self.feature_extractor_version = feature_extractor_version
+
+    def setup(self, stage: str = None):
+        if stage != "test":
+            raise ValueError("For now this datamodule can only be used for testing")
+
+        # see https://github.com/huggingface/transformers/issues/5486
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+            self.tokenizer_version
+        )
+        self.feature_extractor = transformers.AutoFeatureExtractor.from_pretrained(
+            self.feature_extractor_version
+        )
+
+        # use val dataset of imagenet as test set since the actual test set
+        # doesn't have labels
+        self.test_dataset = ImageNet(
+            self.datadir, split="val", prompt_lang=self.prompt_lang
+        )
+
+    def collate_fn(
+        self, items: tp.Sequence[_ImageNetItem]
+    ) -> transformers.BatchEncoding:
+        # ignore prompts, they were preprocessed in `tokenized_prompts`
+        images, _, targets = map(list, zip(*items))
+        return self.feature_extractor(images), torch.tensor(targets)
+
+    def test_dataloader(self) -> torch.utils.data.DataLoader:
+        return torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=self.collate_fn,
+        )
+
+    def prompts_dataloader(
+        self,
+    ) -> torch.utils.data.DataLoader[transformers.BatchEncoding]:
+        """This is not part of pytorch_lightning's api, just my own dataloader"""
+        dataset = getattr(self, "test_dataset", None) or getattr(
+            self, "predict_dataset"
+        )
+        return torch.utils.data.DataLoader(
+            dataset.all_prompts,
+            batch_size=self.batch_size,
+            shuffle=False,
+            # num_workers=4,
+            collate_fn=functools.partial(
+                self.tokenizer, return_tensors="pt", padding=True
+            ),
+        )
