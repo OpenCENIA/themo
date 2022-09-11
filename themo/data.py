@@ -599,6 +599,7 @@ class XTD10(torch.utils.data.Dataset[_CLIPItem]):
 
     captions: tp.List[str]
     image_names: tp.List[str]
+    images: tp.List[PIL.Image.Image]
 
     def __init__(self, datadir: str, lang: str, split: tpx.Literal["test"] = "test"):
 
@@ -625,10 +626,16 @@ class XTD10(torch.utils.data.Dataset[_CLIPItem]):
             f"Please download COCO and put it in {datadir}/coco"
         )
 
+        @memory.cache
+        def images_from_names(image_names):
+            paths = [self._image_path_from_name(name) for name in image_names]
+            return [PIL.Image.open(path) for path in paths]
+
+        # just load everything in memory, this dataset is super small
+        self.images = images_from_names(self.image_names)
+
     def __getitem__(self, key: int) -> _CLIPItem:
-        image_path = self._image_path_from_name(self.image_names[key])
-        image = PIL.Image.open(image_path)
-        return _CLIPItem(self.captions[key], image)
+        return _CLIPItem(self.captions[key], self.images[key])
 
     def __len__(self) -> int:
         return len(self.captions)
@@ -645,6 +652,74 @@ class XTD10(torch.utils.data.Dataset[_CLIPItem]):
 
         splitname = match.group(1)
         return pathlib.Path(self.datadir) / "mscoco" / splitname / image_name
+
+
+class LitXTD10(pl.LightningDataModule):
+    """LightningDataModule for the test dataset XTD10.
+
+    >>> datamodule = LitXTD10(
+    ...     datadir="data",
+    ...     lang="es",
+    ...     batch_size=32,
+    ...     tokenizer_version="dccuchile/bert-base-spanish-wwm-uncased",
+    ...     feature_extractor_version="openai/clip-vit-large-patch14"
+    ... )
+    >>> datamodule.setup("test")
+    >>> len(datamodule.test_dataset)
+    1000
+    """
+
+    def __init__(
+        self,
+        datadir: str,
+        lang: str,
+        batch_size: int,
+        tokenizer_version: str,
+        feature_extractor_version: str,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters(ignore=("datadir",))
+        self.datadir = datadir
+        self.lang = lang
+        self.batch_size = batch_size
+        self.tokenizer_version = tokenizer_version
+        self.feature_extractor_version = feature_extractor_version
+
+    def setup(self, stage=None):
+        if stage == "test":
+            self.processor = transformers.VisionTextDualEncoderProcessor(
+                transformers.AutoFeatureExtractor.from_pretrained(
+                    self.feature_extractor_version
+                ),
+                transformers.AutoTokenizer.from_pretrained(self.tokenizer_version),
+            )
+            self.test_dataset = XTD10(self.datadir, self.lang, split="test")
+        else:
+            raise ValueError(
+                f"this datamodule can be used only for testing, got stage={stage}"
+            )
+
+    def collate_fn(self, items: tp.Sequence[_CLIPItem]) -> transformers.BatchEncoding:
+        """Returns a transformers.BatchEncoding with attributes `input_ids`,
+        `token_type_ids`, `attention_mask` (from the tokenizer) and
+        `pixel_values` (from the feature extractor)
+        """
+        # processor inputs have to be lists
+        texts, images = map(list, zip(*items))
+
+        # TODO: add extra kwargs to processor, like max_length and such
+        return self.processor(
+            text=texts, images=images, return_tensors="pt", padding=True
+        )
+
+    def test_dataloader(self):
+        return torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            # num_workers=4,
+            collate_fn=self.collate_fn,
+        )
 
 
 class _ImageNetItem(tp.NamedTuple):
