@@ -1,8 +1,9 @@
-import joblib
-import pprint
 import pathlib
+import pprint
 import typing as tp
+
 import click
+import joblib
 import pytorch_lightning as pl
 import torch
 import transformers
@@ -82,19 +83,23 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
     return checkpoint_callback.best_model_path
 
 
-def _test_mclip(ctx: click.Context, param: click.Option, value: bool) -> None:
-    # see docs here at
-    # https://click.palletsprojects.com/en/8.1.x/options/#callbacks-and-eager-options
-    if not value or ctx.resilient_parsing:
-        return
+_task_mapping = {
+    "retrieval": (themo.model.LitRetrievalWrapper, themo.data.LitXTD10),
+    "classification": (
+        themo.model.LitClassificationWrapper,
+        themo.data.LitImageNet,
+    ),
+}
 
-    memory = joblib.Memory("data", verbose=0)
 
-    @memory.cache
-    def test_helper():
-        """Allows result to be cached to disk"""
-        model = themo.model.LitRetrievalWrapper(themo.model.MultilingualCLIP())
-        datamodule = themo.data.LitXTD10(
+def _test_mclip(batch_size: int, tasks: tp.Sequence[str]) -> dict:
+    results = {}
+    m_clip_model = themo.model.MultilingualCLIP()
+    for task_name in tasks:
+        print(f"testing Multilingual-CLIP in task {task_name}")
+        lit_wrapper_cls, lit_datamodule_cls = _task_mapping[task_name]
+        model = lit_wrapper_cls(m_clip_model)
+        datamodule = lit_datamodule_cls(
             datadir="data",
             lang="es",
             batch_size=128,
@@ -107,62 +112,84 @@ def _test_mclip(ctx: click.Context, param: click.Option, value: bool) -> None:
             max_epochs=-1,
             logger=False,
         )
-        return trainer.test(model, datamodule, verbose=False)
-
-    pprint.pprint(test_helper())
-
-    ctx.exit()
+        results[task_name] = trainer.test(model, datamodule, verbose=False)
+    return results
 
 
 @cli.command()
 @click.option(
-    "--baseline", is_flag=True, callback=_test_mclip, expose_value=False, is_eager=True
+    "--baseline", is_flag=True, help="Using this option ignores --verion-path"
 )
 @click.option(
     "--version-path",
-    required=True,
     help=(
         "Path to the version dir. It has to be the version directory and not just the"
         " checkpoint, i.e something like `logs/.../version_x`."
     ),
 )
+@click.option(
+    "--task",
+    "tasks",
+    multiple=True,
+    type=click.Choice(["classification", "retrieval"]),
+    help="Choose which tasks to run the tests on. If None, run all tasks",
+)
 @click.option("--batch-size", default=128)
-def test(version_path: str, batch_size: int) -> None:
+def test(
+    baseline: bool,
+    version_path: tp.Optional[str],
+    tasks: tp.Optional[tp.Sequence[str]],
+    batch_size: int,
+) -> None:
 
-    # I'm loading the checkpoint from the version dir instead of the checkpoint
-    # directly because we will need the info of the clip version that was used
-    # to produce target features. That info is in the datamodule, so we will
-    # require the full hparams.yaml file instead of just the ones saved in the
-    # model.
-    try:
-        checkpoint_path = next(
-            iter((pathlib.Path(version_path) / "checkpoints").iterdir())
+    tasks = tasks or ("retrieval", "classification")
+
+    if baseline:
+        _cached_test_mclip = joblib.Memory("data", verbose=0).cache(
+            _test_mclip, ignore=["batch_size"]
         )
-    except StopIteration:
-        raise Exception(
-            f"No checkpoint found in {pathlib.Path(version_path) / 'checkpoints'}"
+        results = _cached_test_mclip(batch_size, tasks)
+    else:
+        # I'm loading the checkpoint from the version dir instead of the checkpoint
+        # directly because we will need the info of the clip version that was used
+        # to produce target features. That info is in the datamodule, so we will
+        # require the full hparams.yaml file instead of just the ones saved in the
+        # model.
+        # For now, since the bert a clip versions are hardcoded I am just using
+        # them directly here.
+        try:
+            checkpoint_path = next(
+                iter((pathlib.Path(version_path) / "checkpoints").iterdir())
+            )
+        except StopIteration:
+            raise Exception(
+                f"No checkpoint found in {pathlib.Path(version_path) / 'checkpoints'}"
+            )
+
+        text_model = themo.LitThemoTextModel.load_from_checkpoint(str(checkpoint_path))
+
+        # For now use the default clip model
+        clip_model = transformers.CLIPModel.from_pretrained(
+            themo.data.TARGET_FEATURES_MODEL
         )
+        themo_model = themo.model.ThemoModel(text_model, clip_model)
+        results = {}
+        for task_name in tasks:
+            lit_wrapper_cls, lit_datamodule_cls = _task_mapping[task_name]
+            model = lit_wrapper_cls(themo_model)
+            datamodule = lit_datamodule_cls(
+                datadir="data",
+                lang="es",
+                batch_size=batch_size,
+                tokenizer_version=themo.model.BERT_MODEL_NAME,
+                feature_extractor_version=themo.data.TARGET_FEATURES_MODEL,
+            )
+            trainer = pl.Trainer(
+                accelerator="gpu",
+                devices=1,
+                max_epochs=-1,
+                logger=False,
+            )
+            results[task_name] = trainer.test(model, datamodule, verbose=False)
 
-    text_model = themo.LitThemoTextModel.load_from_checkpoint(str(checkpoint_path))
-
-    # For now use the default clip model
-    clip_model = transformers.CLIPModel.from_pretrained(
-        themo.data.TARGET_FEATURES_MODEL
-    )
-    themo_model = themo.model.ThemoModel(text_model, clip_model)
-    model = themo.model.LitRetrievalWrapper(themo_model)
-    datamodule = themo.data.LitXTD10(
-        datadir="data",
-        lang="es",
-        batch_size=batch_size,
-        tokenizer_version=themo.model.BERT_MODEL_NAME,
-        feature_extractor_version=themo.data.TARGET_FEATURES_MODEL,
-    )
-    trainer = pl.Trainer(
-        accelerator="gpu",
-        devices=1,
-        max_epochs=-1,
-        logger=False,
-    )
-    results = trainer.test(model, datamodule, verbose=False)
     pprint.pprint(results)

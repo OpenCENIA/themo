@@ -1,12 +1,13 @@
-import typing_extensions as tpx
-import torchmetrics
-import tqdm
 import typing as tp
+
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+import torchmetrics
+import tqdm
 import transformers
 import transformers.models.clip.modeling_clip as transformers_clip
+import typing_extensions as tpx
 from multilingual_clip import pt_multilingual_clip
 
 import themo.data as data
@@ -100,6 +101,11 @@ class ThemoModel(nn.Module):
         logits_per_text = torch.matmul(text_features, image_features.t()) * logit_scale
         return logits_per_text
 
+    def get_logits_per_image(
+        self, image_features: torch.Tensor, text_features: torch.Tensor
+    ) -> torch.Tensor:
+        return self.get_logits_per_text(text_features, image_features).T
+
 
 class MultilingualCLIP(nn.Module):
     """Wrapper class for multilingual clip. This allows evaluating it with
@@ -122,7 +128,8 @@ class MultilingualCLIP(nn.Module):
     def get_text_features(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> torch.Tensor:
-        """Mostly copied from mclip code. They tokenize inside the model's forward method, which is bad design in my opinion"""
+        """Mostly copied from mclip code. They tokenize inside the model's
+        forward method, which is bad design in my opinion"""
 
         embs = self.multilingual_clip.transformer(
             input_ids=input_ids, attention_mask=attention_mask
@@ -145,8 +152,8 @@ class MultilingualCLIP(nn.Module):
         logits_per_text = torch.matmul(text_features, image_features.t()) * logit_scale
         return logits_per_text
 
-    def get_logits_per_iamge(
-        self, text_features: torch.Tensor, image_features: torch.Tensor
+    def get_logits_per_image(
+        self, image_features: torch.Tensor, text_features: torch.Tensor
     ) -> torch.Tensor:
         return self.get_logits_per_text(text_features, image_features).T
 
@@ -263,3 +270,50 @@ class LitRetrievalWrapper(pl.LightningModule):
                 preds=logits_per_text, target=recall_target, indexes=recall_indexes
             )
         )
+
+
+class LitClassificationWrapper(pl.LightningModule):
+    def __init__(self, model) -> None:
+        super().__init__()
+
+        self.model = model
+
+        self.test_metrics = torchmetrics.MetricCollection(
+            {
+                "accuracy@01": torchmetrics.Accuracy(top_k=1),
+                "accuracy@05": torchmetrics.Accuracy(top_k=5),
+                "accuracy@10": torchmetrics.Accuracy(top_k=10),
+            }
+        )
+
+    def on_test_start(self) -> None:
+        """Pre-compute all prompt features and store as non-persistent buffer
+        in self.model"""
+
+        prompt_features_chunked = []
+        dataloader = self.trainer.datamodule.prompts_dataloader()
+
+        for batch in tqdm.tqdm(dataloader, desc="Computing prompt features"):
+            batch = batch.to(self.device)
+            prompt_features_chunked.append(
+                self.model.get_text_features(
+                    batch["input_ids"], batch["attention_mask"]
+                )
+            )
+
+        prompt_features = torch.vstack(prompt_features_chunked)
+        self.model.register_buffer(
+            "cached_prompt_features", prompt_features, persistent=False
+        )
+
+    def test_step(
+        self, batch: tp.Tuple[transformers.BatchEncoding, torch.Tensor], batch_idx: int
+    ) -> None:
+        input_, target = batch
+
+        image_features = self.model.get_image_features(input_["pixel_values"])
+        logits_per_image = self.model.get_logits_per_image(
+            image_features, self.model.cached_prompt_features
+        )
+        # breakpoint()
+        self.log_dict(self.test_metrics(logits_per_image, target))

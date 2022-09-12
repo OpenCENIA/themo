@@ -719,7 +719,7 @@ class LitXTD10(pl.LightningDataModule):
             self.test_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            # num_workers=4,
+            num_workers=4,
             collate_fn=self.collate_fn,
         )
 
@@ -857,7 +857,7 @@ class LitImageNet(pl.LightningDataModule):
     def __init__(
         self,
         datadir: str,
-        prompt_lang: str,
+        lang: str,
         batch_size: int,
         tokenizer_version: str,
         feature_extractor_version: str,
@@ -866,13 +866,15 @@ class LitImageNet(pl.LightningDataModule):
         self.save_hyperparameters(ignore=("datadir",))
 
         self.datadir = datadir
-        self.prompt_lang = prompt_lang
+        self.lang = lang
         self.batch_size = batch_size
         self.tokenizer_version = tokenizer_version
         self.feature_extractor_version = feature_extractor_version
 
     def setup(self, stage: str = None):
         if stage != "test":
+            # possibly we can support the `predict` stage to produce prediction
+            # for the imagenet competition or something
             raise ValueError("For now this datamodule can only be used for testing")
 
         # see https://github.com/huggingface/transformers/issues/5486
@@ -887,16 +889,17 @@ class LitImageNet(pl.LightningDataModule):
 
         # use val dataset of imagenet as test set since the actual test set
         # doesn't have labels
-        self.test_dataset = ImageNet(
-            self.datadir, split="val", prompt_lang=self.prompt_lang
-        )
+        self.test_dataset = ImageNet(self.datadir, split="val", prompt_lang=self.lang)
 
     def collate_fn(
         self, items: tp.Sequence[_ImageNetItem]
-    ) -> transformers.BatchEncoding:
-        # ignore prompts, they were preprocessed in `tokenized_prompts`
+    ) -> tp.Tuple[transformers.BatchEncoding, torch.Tensor]:
+        # ignore prompts, they are processed in the prompts dataloader
         images, _, targets = map(list, zip(*items))
-        return self.feature_extractor(images), torch.tensor(targets)
+        return (
+            self.feature_extractor(images, return_tensors="pt"),
+            torch.tensor(targets),
+        )
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
         return torch.utils.data.DataLoader(
@@ -918,7 +921,7 @@ class LitImageNet(pl.LightningDataModule):
             dataset.all_prompts,
             batch_size=self.batch_size,
             shuffle=False,
-            # num_workers=4,
+            num_workers=4,
             collate_fn=functools.partial(
                 self.tokenizer, return_tensors="pt", padding=True
             ),
