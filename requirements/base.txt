@@ -16,3 +16,4 @@ sacremoses==0.0.53
 Pillow==9.2.0
 typing_extensions==4.3.0
 multilingual-clip==1.0.10
+torchmetrics==0.9.3
