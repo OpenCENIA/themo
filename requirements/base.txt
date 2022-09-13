@@ -15,3 +15,4 @@ transformers==4.19.2
 typing_extensions==4.3.0
 sentencepiece==0.1.96
 sacremoses==0.0.53
+adan-pytorch

@@ -2,6 +2,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import transformers
+# from adan_pytorch import Adan
 
 import themo.data as data
 
@@ -65,5 +66,10 @@ class LitThemoTextModel(ThemoTextModel, pl.LightningModule):
         # TODO: improve optimization. There are many options and it's not clear
         # what options are best, since we are not training from scratch but
         # finetuning a pretrained bert model
+        # optimizer = Adan(
+        #     self.parameters(),
+        #     lr=self.learn_rate,
+        #     betas = (0.02, 0.01, 0.01)
+        # )
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.learn_rate)
         return optimizer

@@ -586,7 +586,7 @@ def _collate_parallel_items(
     source_sentences, _, target_features = zip(*batch)
     return _Batch(
         tokenize(source_sentences),
-        torch.tensor(np.stack(target_features)),
+        torch.tensor(np.stack(target_features).astype("float32")),
     )
 
 
@@ -718,15 +718,12 @@ class FloresParallel(ParallelDasaset):
 
         dset = {}
         # dev: 997 items | devtest: 1012 items
-        dset["train"] = datasets.concatenate_datasets(
+        dset["test"] = datasets.concatenate_datasets(
             [es_dset["devtest"], en_dset["devtest"]], axis=1
         )
-        test_val = datasets.concatenate_datasets(
+        dset["val"] = datasets.concatenate_datasets(
             [es_dset["dev"], en_dset["dev"]], axis=1
         )
-        test_val = test_val.train_test_split(test_size=0.5)
-        dset["test"] = test_val["train"]
-        dset["val"] = test_val["test"]
 
         dset = datasets.DatasetDict(dset)
         return dset
@@ -760,7 +757,7 @@ class TatoebaParallel(ParallelDasaset):
         dset_train_testvalid = dset["train"].train_test_split(test_size=0.1)
         # Split the 10% test + valid in half test, half valid
         dset_test_valid = dset_train_testvalid["test"].train_test_split(test_size=0.5)
-        # gather everyone if you want to have a single DatasetDict
+
         dset = datasets.DatasetDict(
             {
                 "train": dset_train_testvalid["train"],
