@@ -590,8 +590,55 @@ def _collate_parallel_items(
     )
 
 
-class ParallelDasaset(torch.utils.data.Dataset[_ParallelItem]):
+def compute_huggingface_dataset_features(
+    dataset,
+    batch_size: int = 512,
+    clip_version: str = TARGET_FEATURES_MODEL
+):
+
+    device = "cuda"
+    tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
+    model = transformers.CLIPTextModel.from_pretrained(clip_version)
+    model = model.eval()
+    model.requires_grad_(False)
+    model.to(device)
+
+    def compute_features(
+        target_sentence,
+    ) -> npt.NDArray[np.float32]:
+        tokenized = tokenizer(
+            target_sentence,
+            truncation=True,
+            max_length=77,
+            padding="max_length",
+            return_tensors="pt",
+        )
+        return (
+            model(**tokenized.to(device))
+            .pooler_output.cpu()
+            .numpy()
+            .astype("float32")
+        )
+
+    def feature_computer_helper(item, key) -> dict:
+        return {"target_features": compute_features(item[key])}
+
+    feature_computer = functools.partial(
+        feature_computer_helper,
+        key="target",
+    )
+
+    dataset = dataset.map(
+        feature_computer,
+        batched=True,
+        batch_size=batch_size
+    )
+
+
+class ParallelDataset(torch.utils.data.Dataset[_ParallelItem]):
     dataset_name: str = None
+    clip_version: str = TARGET_FEATURES_MODEL
+
 
     def __init__(
         self,
@@ -624,38 +671,6 @@ class ParallelDasaset(torch.utils.data.Dataset[_ParallelItem]):
             print(f"All files already in {basepath}, skipping...")
             return
 
-        device = "cuda"
-        tokenizer = transformers.CLIPTokenizer.from_pretrained(TARGET_FEATURES_MODEL)
-        model = transformers.CLIPTextModel.from_pretrained(TARGET_FEATURES_MODEL)
-        model = model.eval()
-        model.requires_grad_(False)
-        model.to(device)
-
-        def compute_features(
-            target_sentence,
-        ) -> npt.NDArray[np.float32]:
-            tokenized = tokenizer(
-                target_sentence,
-                truncation=True,
-                max_length=77,
-                padding="max_length",
-                return_tensors="pt",
-            )
-            return (
-                model(**tokenized.to(device))
-                .pooler_output.cpu()
-                .numpy()
-                .astype("float32")
-            )
-
-        def feature_computer_helper(item, key) -> dict:
-            return {"target_features": compute_features(item[key])}
-
-        cls.feature_computer = functools.partial(
-            feature_computer_helper,
-            key="target",
-        )
-
         dset = cls.custom_data_preparation()
         dset.save_to_disk(basepath)
 
@@ -672,74 +687,8 @@ class ParallelDasaset(torch.utils.data.Dataset[_ParallelItem]):
         return len(self.parallel_items)
 
 
-class FloresParallel(ParallelDasaset):
-    dataset_name: str = "facebook/flores"
-
-    def __init__(
-        self,
-        datadir: str,
-        split: tpx.Literal["train", "val", "test"],
-        clip_version: str = TARGET_FEATURES_MODEL,
-        prepare_data: bool = False,
-    ) -> None:
-        super().__init__(datadir, split, clip_version, prepare_data)
-
-    @classmethod
-    def custom_data_preparation(cls) -> datasets.DatasetDict:
-        dset_es = datasets.load_dataset(cls.dataset_name, "spa_Latn")
-        dset_en = datasets.load_dataset(cls.dataset_name, "eng_Latn")
-
-        def process_dset(
-            dset, columns_to_rename, new_column_names
-        ) -> datasets.DatasetDict:
-            new_dset = dset.remove_columns(
-                list(set(columns_to_rename) ^ set(dset["dev"].column_names))
-            )
-            new_dset = new_dset.rename_columns(
-                dict(zip(columns_to_rename, new_column_names))
-            )
-            return new_dset
-
-        es_dset = process_dset(
-            dset=dset_es,
-            columns_to_rename=["sentence"],
-            new_column_names=["source"],
-        )
-        en_dset = process_dset(
-            dset=dset_en,
-            columns_to_rename=["sentence"],
-            new_column_names=["target"],
-        )
-        en_dset = en_dset.map(
-            cls.feature_computer,
-            batched=True,
-            batch_size=256,
-        )
-
-        dset = {}
-        # dev: 997 items | devtest: 1012 items
-        dset["test"] = datasets.concatenate_datasets(
-            [es_dset["devtest"], en_dset["devtest"]], axis=1
-        )
-        dset["val"] = datasets.concatenate_datasets(
-            [es_dset["dev"], en_dset["dev"]], axis=1
-        )
-
-        dset = datasets.DatasetDict(dset)
-        return dset
-
-
-class TatoebaParallel(ParallelDasaset):
+class TatoebaParallel(ParallelDataset):
     dataset_name: str = "tatoeba"
-
-    def __init__(
-        self,
-        datadir: str,
-        split: tpx.Literal["train", "val", "test"],
-        clip_version: str = TARGET_FEATURES_MODEL,
-        prepare_data: bool = False,
-    ) -> None:
-        super().__init__(datadir, split, clip_version, prepare_data)
 
     @classmethod
     def custom_data_preparation(cls) -> datasets.DatasetDict:
@@ -747,10 +696,9 @@ class TatoebaParallel(ParallelDasaset):
         dset = dset.flatten()
         dset = dset.rename_column("translation.es", "source")
         dset = dset.rename_column("translation.en", "target")
-        dset = dset.map(
-            cls.feature_computer,
-            batched=True,
-            batch_size=512,
+        dset = compute_huggingface_dataset_features(
+            dset,
+            clip_version=cls.clip_version,
         )
 
         # 90% train, 10% test + validation
@@ -769,17 +717,8 @@ class TatoebaParallel(ParallelDasaset):
         return dset
 
 
-class OpusParallel(ParallelDasaset):
+class OpusParallel(ParallelDataset):
     dataset_name: str = "opus100"
-
-    def __init__(
-        self,
-        datadir: str,
-        split: tpx.Literal["train", "val", "test"],
-        clip_version: str = TARGET_FEATURES_MODEL,
-        prepare_data: bool = False,
-    ) -> None:
-        super().__init__(datadir, split, clip_version, prepare_data)
 
     @classmethod
     def custom_data_preparation(cls) -> datasets.DatasetDict:
@@ -787,10 +726,9 @@ class OpusParallel(ParallelDasaset):
         dset = dset.flatten()
         dset = dset.rename_column("translation.es", "source")
         dset = dset.rename_column("translation.en", "target")
-        dset = dset.map(
-            cls.feature_computer,
-            batched=True,
-            batch_size=512,
+        dset = compute_huggingface_dataset_features(
+            dset,
+            clip_version=cls.clip_version,
         )
 
         dset = datasets.DatasetDict(
@@ -804,17 +742,8 @@ class OpusParallel(ParallelDasaset):
         return dset
 
 
-class TedParallel(ParallelDasaset):
+class TedParallel(ParallelDataset):
     dataset_name: str = "ted_talks_iwslt"
-
-    def __init__(
-        self,
-        datadir: str,
-        split: tpx.Literal["train", "val", "test"],
-        clip_version: str = TARGET_FEATURES_MODEL,
-        prepare_data: bool = False,
-    ) -> None:
-        super().__init__(datadir, split, clip_version, prepare_data)
 
     @classmethod
     def custom_data_preparation(cls) -> datasets.DatasetDict:
@@ -829,10 +758,9 @@ class TedParallel(ParallelDasaset):
             dset = dset.flatten()
             dset = dset.rename_column("translation.es", "source")
             dset = dset.rename_column("translation.en", "target")
-            dset = dset.map(
-                cls.feature_computer,
-                batched=True,
-                batch_size=512,
+            dset = compute_huggingface_dataset_features(
+                dset,
+                clip_version=cls.clip_version,
             )
             dsets.append(dset["train"])
 
@@ -853,7 +781,6 @@ class TedParallel(ParallelDasaset):
 
 class LitParallel(pl.LightningDataModule):
     _datasets: tp.ClassVar[tp.List[type]] = [
-        FloresParallel,
         TedParallel,
         OpusParallel,
         TatoebaParallel,
@@ -866,9 +793,9 @@ class LitParallel(pl.LightningDataModule):
     tokenizer_name: str
     # these attrs are set in setup method
     # splits are optional because some might not be present depending on stage
-    # train_split: tp.Optional[ParallelDatasets]
-    # val_split: tp.Optional[ParallelDatasets]
-    # test_split: tp.Optional[ParallelDatasets]
+    train_split: tp.Optional[ParallelDataset]
+    val_split: tp.Optional[ParallelDataset]
+    test_split: tp.Optional[ParallelDataset]
 
     tokenizer: transformers.BertTokenizer
     _collate: tp.Callable[[tp.Sequence[_ParallelItem]], _Batch]
