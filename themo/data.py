@@ -591,10 +591,10 @@ def _collate_parallel_items(
 
 
 def compute_huggingface_dataset_features(
-    dataset,
+    dataset: datasets.DatasetDict,
     batch_size: int = 512,
-    clip_version: str = TARGET_FEATURES_MODEL
-):
+    clip_version: str = TARGET_FEATURES_MODEL,
+) -> datasets.DatasetDict:
 
     device = "cuda"
     tokenizer = transformers.CLIPTokenizer.from_pretrained(clip_version)
@@ -614,10 +614,7 @@ def compute_huggingface_dataset_features(
             return_tensors="pt",
         )
         return (
-            model(**tokenized.to(device))
-            .pooler_output.cpu()
-            .numpy()
-            .astype("float32")
+            model(**tokenized.to(device)).pooler_output.cpu().numpy().astype("float32")
         )
 
     def feature_computer_helper(item, key) -> dict:
@@ -628,17 +625,12 @@ def compute_huggingface_dataset_features(
         key="target",
     )
 
-    dataset = dataset.map(
-        feature_computer,
-        batched=True,
-        batch_size=batch_size
-    )
+    return dataset.map(feature_computer, batched=True, batch_size=batch_size)
 
 
 class ParallelDataset(torch.utils.data.Dataset[_ParallelItem]):
     dataset_name: str = None
     clip_version: str = TARGET_FEATURES_MODEL
-
 
     def __init__(
         self,
