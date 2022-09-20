@@ -38,7 +38,6 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
     model = themo.LitThemoTextModel(
         embed_dim=clip_config.hidden_size, learn_rate=learn_rate
     )
-    print("Data module ready!")
     # Trainer config
     # ==============
     checkpoint_callback_kwargs = {
