@@ -1,15 +1,20 @@
 import collections
 import functools
 import inspect
+import operator
+import os
 import pathlib
+import re
 import types
 import typing as tp
 import warnings
+import xml.etree.ElementTree as ET
 
 import datasets
 import joblib
 import numpy as np
 import numpy.typing as npt
+import PIL.Image
 import pyarrow as pa
 import pyarrow.csv
 import pytorch_lightning as pl
@@ -798,7 +803,6 @@ class LitParallel(pl.LightningDataModule):
         batch_size: int,
         max_sequence_length: int,
         tokenizer_name: str = BERT_MODEL_NAME,
-        # datasets: tp.List[str] = 'all',
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=("datadir",))
@@ -867,4 +871,354 @@ class LitParallel(pl.LightningDataModule):
             shuffle=False,
             num_workers=4,
             collate_fn=self._collate,
+        )
+
+## Evaluation
+
+class _CLIPItem(tp.NamedTuple):
+    text: str
+    image: PIL.Image.Image
+
+
+class XTD10(torch.utils.data.Dataset[_CLIPItem]):
+    name: tp.ClassVar[str] = "xtd10"
+
+    _base_url = (
+        "https://raw.githubusercontent.com/adobe-research/"  # org
+        "Cross-lingual-Test-Dataset-XTD10/"  # repo
+        "d77ff16148468c84287f3efcbf602a015c5e4954/"  # specific commit
+        "XTD10/"  # dir inside repo
+    )
+    _fname_template = "test_1kcaptions_{}.txt"
+    _image_names_url = _base_url + "test_image_names.txt"
+
+    datadir: str
+    fname: str
+
+    captions: tp.List[str]
+    image_names: tp.List[str]
+    images: tp.List[PIL.Image.Image]
+
+    def __init__(self, datadir: str, lang: str, split: tpx.Literal["test"] = "test"):
+
+        self.datadir = datadir
+        self.fname = self._fname_template.format(lang)
+        self.lang = lang
+        assert split == "test", "XTD10 is a test dataset"
+
+        memory = joblib.Memory(datadir, verbose=0)
+
+        @memory.cache
+        def download_simple_lines(url: str) -> tp.List[str]:
+            """Downloads a simple .txt file and returns the lines as a list"""
+            return requests.get(url).text.splitlines()
+
+        self.captions = download_simple_lines(self._base_url + self.fname)
+        self.image_names = download_simple_lines(self._image_names_url)
+
+        assert all(
+            self._image_path_from_name(image_name).exists()
+            for image_name in self.image_names
+        ), (
+            "Some needed COCO images are missing. "
+            f"Please download COCO and put it in {datadir}/coco"
+        )
+
+        @memory.cache
+        def images_from_names(image_names):
+            paths = [self._image_path_from_name(name) for name in image_names]
+            return [PIL.Image.open(path) for path in paths]
+
+        # just load everything in memory, this dataset is super small
+        self.images = images_from_names(self.image_names)
+
+    def __getitem__(self, key: int) -> _CLIPItem:
+        return _CLIPItem(self.captions[key], self.images[key])
+
+    def __len__(self) -> int:
+        return len(self.captions)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.datadir!r}, {self.lang!r})"
+
+    def _image_path_from_name(self, image_name: str) -> pathlib.Path:
+        """Simple helper function to determine a COCO image path given its
+        name. Basically prepends the correct split dir to the path name"""
+        match = re.match(r"COCO_(.*)_\d*.jpg", image_name)
+        if not match:
+            raise ValueError(f"Bad image_name format {image_name}")
+
+        splitname = match.group(1)
+        return pathlib.Path(self.datadir) / "mscoco" / splitname / image_name
+
+
+class LitXTD10(pl.LightningDataModule):
+    """LightningDataModule for the test dataset XTD10.
+
+    >>> datamodule = LitXTD10(
+    ...     datadir="data",
+    ...     lang="es",
+    ...     batch_size=32,
+    ...     tokenizer_version="dccuchile/bert-base-spanish-wwm-uncased",
+    ...     feature_extractor_version="openai/clip-vit-large-patch14"
+    ... )
+    >>> datamodule.setup("test")
+    >>> len(datamodule.test_dataset)
+    1000
+    """
+
+    def __init__(
+        self,
+        datadir: str,
+        lang: str,
+        batch_size: int,
+        tokenizer_version: str,
+        feature_extractor_version: str,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters(ignore=("datadir",))
+        self.datadir = datadir
+        self.lang = lang
+        self.batch_size = batch_size
+        self.tokenizer_version = tokenizer_version
+        self.feature_extractor_version = feature_extractor_version
+
+    def setup(self, stage=None):
+        if stage == "test":
+            self.processor = transformers.VisionTextDualEncoderProcessor(
+                transformers.AutoFeatureExtractor.from_pretrained(
+                    self.feature_extractor_version
+                ),
+                transformers.AutoTokenizer.from_pretrained(self.tokenizer_version),
+            )
+            self.test_dataset = XTD10(self.datadir, self.lang, split="test")
+        else:
+            raise ValueError(
+                f"this datamodule can be used only for testing, got stage={stage}"
+            )
+
+    def collate_fn(self, items: tp.Sequence[_CLIPItem]) -> transformers.BatchEncoding:
+        """Returns a transformers.BatchEncoding with attributes `input_ids`,
+        `token_type_ids`, `attention_mask` (from the tokenizer) and
+        `pixel_values` (from the feature extractor)
+        """
+        # processor inputs have to be lists
+        texts, images = map(list, zip(*items))
+
+        # TODO: add extra kwargs to processor, like max_length and such
+        return self.processor(
+            text=texts, images=images, return_tensors="pt", padding=True
+        )
+
+    def test_dataloader(self) -> torch.utils.data.DataLoader:
+        return torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=self.collate_fn,
+        )
+
+
+class _ImageNetItem(tp.NamedTuple):
+    image: PIL.Image.Image
+    prompt: tp.Optional[str]
+    label: tp.Optional[int]
+
+
+class ImageNet(torch.utils.data.Dataset[_ImageNetItem]):
+    name: tp.ClassVar[str] = "imagenet"
+    prompt_prefix: str = "a picture of a "
+    _lens = {"val": 50_000, "test": 100_000}
+
+    datadir: str
+    split: tpx.Literal["val", "test"]
+    prompt_lang: str
+
+    class _SynsetData(tpx.TypedDict):
+        prompt: str
+        class_idx: int
+
+    synset_mapping: tp.Dict[str, _SynsetData]
+    english_classes: tp.List[str]
+
+    def __init__(
+        self, datadir: str, split: tpx.Literal["val", "test"], prompt_lang: str
+    ) -> None:
+        assert split in (
+            "val",
+            "test",
+        ), "For this work we don't use the train split, so it's not available"
+
+        self.datadir = datadir
+        self.split = split
+        self.prompt_lang = prompt_lang
+
+        wnids = []
+        self.english_classes = []
+        with open(pathlib.Path(datadir) / self.name / "LOC_synset_mapping.txt") as file:
+            # NOTE: i am keeping only the first comma-separated field of the
+            # synset description
+            for i, line in enumerate(file):
+                wnid, _, descriptions = line.partition(" ")
+                first_description, *_ = (d.strip() for d in descriptions.split(","))
+                wnids.append(wnid)
+                self.english_classes.append(first_description)
+
+        english_prompts = [self.prompt_prefix + name for name in self.english_classes]
+        # preeetty nasty formating, not gonna lie
+        translated_prompts = [
+            str(prompt)
+            for prompt in joblib.Memory(datadir, verbose=0).cache(
+                ignore=["batch_size"]
+            )(translate)(
+                english_prompts,
+                f"Helsinki-NLP/opus-mt-en-{prompt_lang}",
+                batch_size=100,
+            )
+        ]
+        self.synset_mapping = {}
+        for i, (wnid, prompt) in enumerate(zip(wnids, translated_prompts)):
+            self.synset_mapping[wnid] = {"prompt": prompt, "class_idx": i}
+
+    @property
+    def all_prompts(self) -> tp.List[str]:
+        # since py37 dict insertion order is guaranteed
+        # im sceptic
+        syn_vals = self.synset_mapping.values()
+        sorted_vals = sorted(syn_vals, key=operator.itemgetter("class_idx"))
+        return [v["prompt"] for v in sorted_vals]
+
+    def __getitem__(self, key: int) -> _ImageNetItem:
+        if not (0 <= key < len(self)):
+            raise IndexError
+        # imagenet files are 1-indexed
+        key = key + 1
+        base_path = pathlib.Path(self.datadir) / self.name / "ILSVRC"
+        prompt: tp.Optional[str] = None
+        label: tp.Optional[int] = None
+        if self.split == "val":
+            # only val split has annotations
+            ann_file = (
+                base_path
+                / "Annotations"
+                / "CLS-LOC"
+                / self.split
+                / f"ILSVRC2012_val_{key:08}.xml"
+            )
+            ann_wnid = self.parse_annotation(ann_file)["object"]["name"]
+            prompt = self.synset_mapping[ann_wnid]["prompt"]
+            label = self.synset_mapping[ann_wnid]["class_idx"]
+
+        image_path = (
+            base_path
+            / "Data"
+            / "CLS-LOC"
+            / self.split
+            / f"ILSVRC2012_{self.split}_{key:08}.JPEG"
+        )
+
+        image = PIL.Image.open(image_path)
+        return _ImageNetItem(image, prompt, label)
+
+    def __len__(self) -> int:
+        return self._lens[self.split]
+
+    @staticmethod
+    def parse_annotation(xml_path: tp.Union[str, pathlib.Path]) -> dict:
+        def parse_node(node):
+            if len(node) == 0:
+                return node.text
+            else:
+                return {child.tag: parse_node(child) for child in node}
+
+        return parse_node(ET.parse(xml_path).getroot())
+
+
+class LitImageNet(pl.LightningDataModule):
+    """LightningDataModule for the val and test splits of ImageNet
+
+    >>> datamodule = LitImageNet(
+    ...     datadir="data",
+    ...     prompt_lang="es",
+    ...     batch_size=32,
+    ...     tokenizer_version="dccuchile/bert-base-spanish-wwm-uncased",
+    ...     feature_extractor_version="openai/clip-vit-large-patch14",
+    ... )
+    >>> datamodule.setup("test")
+    >>> len(datamodule.test_dataset)
+    50000
+    """
+
+    def __init__(
+        self,
+        datadir: str,
+        lang: str,
+        batch_size: int,
+        tokenizer_version: str,
+        feature_extractor_version: str,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters(ignore=("datadir",))
+
+        self.datadir = datadir
+        self.lang = lang
+        self.batch_size = batch_size
+        self.tokenizer_version = tokenizer_version
+        self.feature_extractor_version = feature_extractor_version
+
+    def setup(self, stage: str = None):
+        if stage != "test":
+            # possibly we can support the `predict` stage to produce prediction
+            # for the imagenet competition or something
+            raise ValueError("For now this datamodule can only be used for testing")
+
+        # see https://github.com/huggingface/transformers/issues/5486
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+            self.tokenizer_version
+        )
+        self.feature_extractor = transformers.AutoFeatureExtractor.from_pretrained(
+            self.feature_extractor_version
+        )
+
+        # use val dataset of imagenet as test set since the actual test set
+        # doesn't have labels
+        self.test_dataset = ImageNet(self.datadir, split="val", prompt_lang=self.lang)
+
+    def collate_fn(
+        self, items: tp.Sequence[_ImageNetItem]
+    ) -> tp.Tuple[transformers.BatchEncoding, torch.Tensor]:
+        # ignore prompts, they are processed in the prompts dataloader
+        images, _, targets = map(list, zip(*items))
+        return (
+            self.feature_extractor(images, return_tensors="pt"),
+            torch.tensor(targets),
+        )
+
+    def test_dataloader(self) -> torch.utils.data.DataLoader:
+        return torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=self.collate_fn,
+        )
+
+    def prompts_dataloader(
+        self,
+    ) -> torch.utils.data.DataLoader[transformers.BatchEncoding]:
+        """This is not part of pytorch_lightning's api, just my own dataloader"""
+        dataset = getattr(self, "test_dataset", None) or getattr(
+            self, "predict_dataset"
+        )
+        return torch.utils.data.DataLoader(
+            dataset.all_prompts,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=functools.partial(
+                self.tokenizer, return_tensors="pt", padding=True
+            ),
         )

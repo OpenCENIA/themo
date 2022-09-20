@@ -1,4 +1,4 @@
-import themo.cli as cli
+from themo.cli import cli
 
 if __name__ == "__main__":
-    cli.train()
+    cli()
