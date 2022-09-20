@@ -630,7 +630,6 @@ def compute_huggingface_dataset_features(
 
 class ParallelDataset(torch.utils.data.Dataset[_ParallelItem]):
     dataset_name: str = None
-    clip_version: str = TARGET_FEATURES_MODEL
 
     def __init__(
         self,
@@ -652,7 +651,7 @@ class ParallelDataset(torch.utils.data.Dataset[_ParallelItem]):
         self.parallel_items = self.parallel_items[split]
 
     @classmethod
-    def prepare_data(cls, datadir: str, split=None) -> None:
+    def prepare_data(cls, datadir: str, split: str = None) -> None:
         basepath = pathlib.Path(datadir) / cls.dataset_name
         basepath.mkdir(exist_ok=True, parents=True)
 
@@ -693,16 +692,15 @@ class TatoebaParallel(ParallelDataset):
             clip_version=cls.clip_version,
         )
 
-        # 90% train, 10% test + validation
-        dset_train_testvalid = dset["train"].train_test_split(test_size=0.1)
-        # Split the 10% test + valid in half test, half valid
-        dset_test_valid = dset_train_testvalid["test"].train_test_split(test_size=0.5)
+        # wacky workaround to create a dataset without test and val
+        aux_empty_dset_dict = {column: [] for column in dset["train"].column_names}
+        aux_empty_dset = datasets.Dataset.from_dict(aux_empty_dset_dict)
 
         dset = datasets.DatasetDict(
             {
-                "train": dset_train_testvalid["train"],
-                "test": dset_test_valid["test"],
-                "val": dset_test_valid["train"],
+                "train": dset["train"],
+                "test": aux_empty_dset,
+                "val": aux_empty_dset,
             }
         )
 
@@ -758,13 +756,15 @@ class TedParallel(ParallelDataset):
 
         dset = datasets.concatenate_datasets(dsets)
 
-        train_testvalid = dset.train_test_split(test_size=0.1)
-        test_valid = train_testvalid["test"].train_test_split(test_size=0.5)
+        # wacky workaround to create a dataset without test and val
+        aux_empty_dset_dict = {column: [] for column in dset["train"].column_names}
+        aux_empty_dset = datasets.Dataset.from_dict(aux_empty_dset_dict)
+
         dset = datasets.DatasetDict(
             {
-                "train": train_testvalid["train"],
-                "test": test_valid["test"],
-                "val": test_valid["train"],
+                "train": dset["train"],
+                "test": aux_empty_dset,
+                "val": aux_empty_dset,
             }
         )
 
