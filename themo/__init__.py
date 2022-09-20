@@ -1,5 +1,10 @@
-from .data import (LitParallel, LitWITParallel, LitWITTranslated, WITParallel,
-                   WITTranslated)
+from .data import (
+    LitParallel,
+    LitWITParallel,
+    LitWITTranslated,
+    WITParallel,
+    WITTranslated,
+)
 from .model import LitThemoTextModel, ThemoModel, ThemoTextModel
 
 __all__ = [

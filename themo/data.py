@@ -873,7 +873,9 @@ class LitParallel(pl.LightningDataModule):
             collate_fn=self._collate,
         )
 
-## Evaluation
+
+# Evaluation
+
 
 class _CLIPItem(tp.NamedTuple):
     text: str
