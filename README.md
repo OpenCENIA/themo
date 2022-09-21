@@ -32,7 +32,7 @@ To evaluate your trained model, run (something like)
 python -m themo test --version-path logs/.../version_X
 ```
 
-For the sake of comparisson, here are the baseline results (taken from [Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP))
+For the sake of comparison, here are the baseline results (taken from [Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP))
 |           |  @01  |  @05  |  @10  |
 |-----------|:-----:|:-----:|:-----:|
 | Accuracy  | 0.370 | 0.594 | 0.660 |
