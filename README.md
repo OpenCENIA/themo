@@ -1,30 +1,44 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)
 
-# Themo
+# <p align="center">Themo</p>
 
 Themo, named after [Themo Lobos](https://es.wikipedia.org/wiki/Themo_Lobos), is a BERT-based CLIP text encoder trained in spanish.
 
-## Training & Evaluation
+## Training
 
 To train your own version of Themo, simply run
 ```console
 python -m themo train
 ```
 
+## Evaluation
+
 Our best results were achieved with the following hyperparameters
 ```console
 python -m themo train --batch-size 256 --learn-rate 8e-5
 ```
 
-Which achieved a final training loss of 0.244 and the following evaluation scores:
+Which achieved a final training loss of 0.244 and the following evaluation scores
 
 |           |  @01  |  @05  |  @10  |
 |-----------|:-----:|:-----:|:-----:|
 | Accuracy  | 0.366 | 0.586 | 0.649 |
 | Retrieval | 0.481 | 0.752 |  0.85 |
 
-To evaluate your trained model, run
+To evaluate your trained model, run (something like)
+
+```console
+python -m themo test --version-path logs/.../version_X
+```
+
+For the sake of comparisson, here are the baseline results (taken from [Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP))
+|           |  @01  |  @05  |  @10  |
+|-----------|:-----:|:-----:|:-----:|
+| Accuracy  | 0.370 | 0.594 | 0.660 |
+| Retrieval | 0.504 | 0.795 | 0.888 |
+
+They may also be accessed running
 
 ```
 python -m themo test --baseline
