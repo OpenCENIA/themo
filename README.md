@@ -1,15 +1,56 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)
 
-# themo
+# <p align="center">Themo</p>
 
-# data
+Themo, named after [Themo Lobos](https://es.wikipedia.org/wiki/Themo_Lobos), is a BERT-based CLIP text encoder trained in spanish.
+
+## Training
+
+To train your own version of Themo, simply run
+```console
+python -m themo train
+```
+
+## Evaluation
+
+Our best results were achieved with the following hyperparameters
+```console
+python -m themo train --batch-size 256 --learn-rate 8e-5
+```
+
+Which achieved a final training loss of 0.244 and the following evaluation scores
+
+|           |  @01  |  @05  |  @10  |
+|-----------|:-----:|:-----:|:-----:|
+| Accuracy  | 0.366 | 0.586 | 0.649 |
+| Retrieval | 0.481 | 0.752 |  0.85 |
+
+To evaluate your trained model, run (something like)
+
+```console
+python -m themo test --version-path logs/.../version_X
+```
+
+For the sake of comparison, here are the baseline results (taken from [Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP))
+|           |  @01  |  @05  |  @10  |
+|-----------|:-----:|:-----:|:-----:|
+| Accuracy  | 0.370 | 0.594 | 0.660 |
+| Retrieval | 0.504 | 0.795 | 0.888 |
+
+They may also be accessed running
+
+```
+python -m themo test --baseline
+```
+
+## Data
 
 Some data is kinda tricky to get and/or is super redundant bcause we use e.g
 only the test set, etc. so for simplicity here are some instructions on how to
 download the data we are using.
 
-## MSCOCO / XTD10
+### MSCOCO / XTD10
 The captions come from the official repo of XTD10 and the implementation takes care of
 downloading. The images come from standard MSCOCO, but not all images are used. To
 download the filtered version run
@@ -40,7 +81,7 @@ data
 The command I gave should leave things in this format. Any extra dirs and files are ignored, so you can use full mscoco if you want.
 
 
-## ImageNet
+### ImageNet
 
 Same as with MSCOCO, you can use the full ImageNet in the datadir, but the train images aren't needed. The following command only downloads the splits needed for this work.
 ```console

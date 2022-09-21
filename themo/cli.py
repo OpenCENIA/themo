@@ -42,7 +42,7 @@ def train(batch_size: int, max_sequence_length: int, learn_rate: float) -> str:
         themo.data.TARGET_FEATURES_MODEL
     )
 
-    datamodule = themo.LitWITTranslated(
+    datamodule = themo.LitParallel(
         datadir="data", batch_size=batch_size, max_sequence_length=max_sequence_length
     )
     model = themo.LitThemoTextModel(
