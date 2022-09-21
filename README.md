@@ -24,7 +24,7 @@ Which achieved a final training loss of 0.244 and the following evaluation score
 | Accuracy  | 0.366 | 0.586 | 0.649 |
 | Retrieval | 0.481 | 0.752 |  0.85 |
 
-To reproduce the evaluation with your train model, run
+To evaluate your trained model, run
 
 ```
 python -m themo test --baseline
