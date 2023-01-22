@@ -3,63 +3,69 @@
 
 # <p align="center">Themo</p>
 
-Themo, named after [Themo Lobos](https://es.wikipedia.org/wiki/Themo_Lobos), is a BERT-based CLIP text encoder trained in spanish.
+Themo, named after the beloved Chilean cartoonist [Themo Lobos](https://es.wikipedia.org/wiki/Themo_Lobos), is a BERT-based CLIP text encoder trained in spanish.
 
 ## Training
 
 To train your own version of Themo, simply run
+
 ```console
 python -m themo train
 ```
 
 ## Evaluation
 
-Our best results were achieved with the following hyperparameters
+Our best results were achieved with the following hyperparameters:
+
 ```console
 python -m themo train --batch-size 256 --learn-rate 8e-5
 ```
 
-Which achieved a final training loss of 0.244 and the following evaluation scores
+Which achieved a final training loss of `0.244` and the following evaluation scores:
 
 |           |  @01  |  @05  |  @10  |
 |-----------|:-----:|:-----:|:-----:|
 | Accuracy  | 0.366 | 0.586 | 0.649 |
 | Retrieval | 0.481 | 0.752 |  0.85 |
 
-To evaluate your trained model, run (something like)
+To evaluate your trained model, run (something like):
 
 ```console
 python -m themo test --version-path logs/.../version_X
 ```
 
-For the sake of comparison, here are the baseline results (taken from [Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP))
+For the sake of comparison, here are the baseline results (taken from [Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP)):
 |           |  @01  |  @05  |  @10  |
 |-----------|:-----:|:-----:|:-----:|
 | Accuracy  | 0.370 | 0.594 | 0.660 |
 | Retrieval | 0.504 | 0.795 | 0.888 |
 
-They may also be accessed running
+They may also be accessed running:
 
 ```
 python -m themo test --baseline
 ```
 
-## Data
+### Data
 
-Some data is kinda tricky to get and/or is super redundant bcause we use e.g
-only the test set, etc. so for simplicity here are some instructions on how to
+Some data is kinda tricky to get and/or is super redundant because we could only use the test set.
+
+For simplicity here are some instructions on how to
 download the data we are using.
 
-### MSCOCO / XTD10
-The captions come from the official repo of XTD10 and the implementation takes care of
-downloading. The images come from standard MSCOCO, but not all images are used. To
-download the filtered version run
+#### MSCOCO / XTD10
+
+The captions come from the official repo of XTD10 and the implementation takes care of the download. 
+
+The images come from standard MSCOCO, but not all images are used. To download the filtered version run:
+
 ```console
 mkdir -p data/mscoco && wget -O- https://users.dcc.uchile.cl/\~gchapero/datasets/coco_xtd10.tar.gz | tar -xz -C data/mscoco
 ```
 
-You can use full MSCOCO but it is disk-inefficient. Anyways, the data dir should
-look like this for the images to be located properly
+You can use full MSCOCO but it is disk-inefficient.
+
+The data directories should look like this for the images to be located properly:
 
 ```
 data
@@ -78,17 +84,17 @@ data
 ...
 ```
 
-The command I gave should leave things in this format. Any extra dirs and files are ignored, so you can use full mscoco if you want.
+The command here should leave things in this format. Any extra dirs and files are ignored, so you can use full MSCOCO if you want.
 
+#### ImageNet
 
-### ImageNet
+Same as with MSCOCO, you can use the full ImageNet in the data dirrectory, but the training images are not needed. The following command only downloads the splits needed for this work:
 
-Same as with MSCOCO, you can use the full ImageNet in the datadir, but the train images aren't needed. The following command only downloads the splits needed for this work.
 ```console
 mkdir -p data/imagenet && wget -O- https://users.dcc.uchile.cl/\~gchapero/datasets/imagenet_object_localization_patched2019_val_test_only.tar.gz | tar -xzC data/imagenet
 ```
 
-The datadir should end up looking like this, whether you use full ImageNet or our filtered version
+The data directory should end up looking like this, whether you use full ImageNet or our filtered version:
 
 ```
 data/
