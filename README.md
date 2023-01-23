@@ -7,9 +7,9 @@ Themo, named after the beloved Chilean cartoonist [Themo Lobos](https://es.wikip
 
 ## Why Themo?
 
-Multimodal learning has revolutionized many aspects of deep learning, but most of these models are only trained in english, and thus only work in this language.
+Multimodal learning has revolutionized many aspects of deep learning, but most of these models are only trained in english, and thus only work in said language.
 
-Our goal here is to take advantage of the knowledge already present in CLIP, and fine tune a language model pre-trained on spanish to learn to _translate_ into CLIP's shared latent space, following [Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP))'s approach.
+Our goal here is to take advantage of the knowledge already present in CLIP, and fine tune a language model pre-trained on spanish to learn to _translate_ into CLIP's shared latent space, following [Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP)'s approach.
 
 Currently, we have only trained a small proof of concept version. We plan to train more versions once we have a robust _spanish-only_ multimodal dataset, and access to more GPU's. 😊
 
