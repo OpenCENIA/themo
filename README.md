@@ -1,19 +1,27 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)
 
-# <p align="center">Themo</p>
+# <p align="center">Themo 🗿</p>
 
-Themo, named after the beloved Chilean cartoonist [Themo Lobos](https://es.wikipedia.org/wiki/Themo_Lobos), is a BERT-based CLIP text encoder trained in spanish.
+Themo, named after the beloved Chilean cartoonist [Themo Lobos](https://es.wikipedia.org/wiki/Themo_Lobos), is a BERT-based [CLIP](https://openai.com/blog/clip/) text encoder trained in spanish.
 
-## Training
+## Why Themo?
 
-To train your own version of Themo, simply run
+Multimodal learning has revolutionized many aspects of deep learning, but most of these models are only trained in english, and thus only work in this language.
+
+Our goal here is to take advantage of the knowledge already present in CLIP, and fine tune a language model pre-trained on spanish to learn to _translate_ into CLIP's shared latent space, following [Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP))'s approach.
+
+Currently, we have only trained a small proof of concept version. We plan to train more versions once we have a robust _spanish-only_ multimodal dataset, and access to more GPU's. 😊
+
+## Training 🧪
+
+To train your own version of Themo, simply run:
 
 ```console
 python -m themo train
 ```
 
-## Evaluation
+## Evaluation 📝
 
 Our best results were achieved with the following hyperparameters:
 
@@ -40,22 +48,21 @@ For the sake of comparison, here are the baseline results (taken from [Multiling
 | Accuracy  | 0.370 | 0.594 | 0.660 |
 | Retrieval | 0.504 | 0.795 | 0.888 |
 
-They may also be accessed running:
+These can also be accessed running:
 
-```
+```console
 python -m themo test --baseline
 ```
 
-### Data
+### Evaulation Data
 
 Some data is kinda tricky to get and/or is super redundant because we could only use the test set.
 
-For simplicity here are some instructions on how to
-download the data we are using.
+For simplicity here are some instructions on how to download the data we are using.
 
 #### MSCOCO / XTD10
 
-The captions come from the official repo of XTD10 and the implementation takes care of the download. 
+The captions come from the official repo of XTD10 and the implementation takes care of the download.
 
 The images come from standard MSCOCO, but not all images are used. To download the filtered version run:
 
@@ -67,7 +74,7 @@ You can use full MSCOCO but it is disk-inefficient.
 
 The data directories should look like this for the images to be located properly:
 
-```
+```console
 data
 ...
 ├── mscoco
@@ -96,7 +103,7 @@ mkdir -p data/imagenet && wget -O- https://users.dcc.uchile.cl/\~gchapero/datase
 
 The data directory should end up looking like this, whether you use full ImageNet or our filtered version:
 
-```
+```console
 data/
 ├── imagenet
 │   ├── ILSVRC
