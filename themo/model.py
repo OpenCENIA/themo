@@ -47,8 +47,8 @@ class ThemoTextModel(nn.Module):
 
 
 class ThemoModel(nn.Module):
-    """This model as is won't work with HF transformers i think. We must find a
-    better to make both compatible"""
+    """This model requires a refactor to work with HF. In the future, should find
+    a way to make it compatible."""
 
     def __init__(
         self, text_model: ThemoTextModel, clip_model: transformers.CLIPModel
